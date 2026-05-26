@@ -1,3 +1,5 @@
 .venv/
 Genesis/utilities/__pycache__/*
 Genesis/__pycache__/*
+.github/
+*raw_obs.npy

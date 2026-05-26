@@ -1,0 +1,215 @@
+# compare_obj_types_fast_videos.yaml
+#
+# Compares GNN vs. Eulerian-splat across four object types:
+#   coffee, ball, capsule, carrots
+#
+# Each object type requires matching global_scale and wkspc_w overrides:
+#   coffee  : global_scale=12, wkspc_w=2.5
+#   ball    : global_scale=12, wkspc_w=2.5
+#   capsule : global_scale=24, wkspc_w=5.0
+#   carrots : global_scale=24, wkspc_w=5.0  (base config default)
+#
+# _sync_env_config() in run_experiments.py propagates these dataset.* overrides
+# to the shared FlexEnv instance before each experiment's episode loop, and
+# force-reloads Eulerian models so they pick up the new global_scale /
+# cam_extrinsic.
+#
+# Usage:
+#   bash scripts/run_experiments_headless_safe.sh \
+#        config/experiments/compare_obj_types_fast_videos.yaml
+
+base_config: config/mpc/config_simple.yaml
+
+output:
+  root_dir: outputs/experiments
+  experiment_name: compare_obj_types_fast_videos
+
+  save_rewards: true
+  save_actions: true
+  save_per_episode_npz: true
+  save_reward_plot: true
+
+  save_raw_obs: true
+  save_states: false
+  save_prediction_videos: true
+  prediction_video_fps: 0.3
+
+  benchmark_throughput: false
+  success_threshold: 0.0
+
+episodes:
+  n_episodes: 10
+  random_seed_base: 13
+
+experiments:
+  # ── coffee ──────────────────────────────────────────────────────────────────
+  - name: gnn_coffee
+    description: "GNN dynamics model — coffee beans"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      dataset.obj: "coffee"
+      dataset.global_scale: 12
+      dataset.wkspc_w: 2.5
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_coffee
+    description: "Eulerian splat heuristic — coffee beans"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      dataset.obj: "coffee"
+      dataset.global_scale: 12
+      dataset.wkspc_w: 2.5
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  # ── ball ────────────────────────────────────────────────────────────────────
+  - name: gnn_ball
+    description: "GNN dynamics model — ball"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      dataset.obj: "ball"
+      dataset.global_scale: 12
+      dataset.wkspc_w: 2.5
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_ball
+    description: "Eulerian splat heuristic — ball"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      dataset.obj: "ball"
+      dataset.global_scale: 12
+      dataset.wkspc_w: 2.5
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  # ── capsule ─────────────────────────────────────────────────────────────────
+  - name: gnn_capsule
+    description: "GNN dynamics model — capsules"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      dataset.obj: "capsule"
+      dataset.global_scale: 24
+      dataset.wkspc_w: 5.0
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_capsule
+    description: "Eulerian splat heuristic — capsules"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      dataset.obj: "capsule"
+      dataset.global_scale: 24
+      dataset.wkspc_w: 5.0
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  # ── carrots (base config default) ───────────────────────────────────────────
+  - name: gnn_carrots
+    description: "GNN dynamics model — carrots (base config default)"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      dataset.obj: "carrots"
+      dataset.global_scale: 24
+      dataset.wkspc_w: 5.0
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_carrots
+    description: "Eulerian splat heuristic — carrots (base config default)"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      dataset.obj: "carrots"
+      dataset.global_scale: 24
+      dataset.wkspc_w: 5.0
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50

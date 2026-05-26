@@ -1,0 +1,150 @@
+# config/experiments/compare_reward_types.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+# Reward type comparison: default vs IoU reporting, for GNN and Splat models.
+#
+# Optimization reward: each model's native reward ('default'):
+#   - GNN:   particle-based (config_reward_ptcl)
+#   - Splat: occupancy × goal score map
+#
+# Reporting reward varied across experiments:
+#   - 'default': model's native reward (euclidean-based for GNN, weighted-sum for Eulerian)
+#   - 'iou':     binary intersection-over-union with goal region (model-invariant)
+#
+# Experiments:
+#   gnn_report_default      GNN, default reporting
+#   gnn_report_iou          GNN, IoU reporting
+#   splat_report_default    Splat, default reporting
+#   splat_report_iou        Splat, IoU reporting
+#
+# CURRENT SCALE: minimal (1 episode, 2 MPC steps, 64 samples, 10 iters)
+# → just enough to verify the code runs end-to-end.
+# Increase n_episodes / mpc.n_mpc / mpc.n_sample / mpc.n_update_iter when ready.
+# ──────────────────────────────────────────────────────────────────────────────
+
+base_config: config/mpc/config_simple.yaml
+
+output:
+  root_dir: outputs/experiments
+  experiment_name: compare_reward_types
+
+  save_rewards:          true
+  save_actions:          true
+  save_per_episode_npz:  true
+  save_reward_plot:      true
+  save_raw_obs:          false
+  save_states:           false
+  save_prediction_videos: false
+
+  benchmark_throughput:  false
+  success_threshold:     0.0
+
+episodes:
+  n_episodes: 3
+  random_seed_base: 42
+
+# ── shared fast overrides (applied per experiment) ────────────────────────────
+# Factor these out in comments to keep per-experiment blocks DRY.
+# All four experiments use identical simulator / MPC budget overrides;
+# only reward type differs.
+
+experiments:
+
+  # ── 1. GNN — default reporting (baseline) ───────────────────────────────
+  - name: gnn_report_default
+    description: "GNN, native particle reward for both optimization and reporting"
+    model:
+      type:     gnn
+      folder:   2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      # fast sim settings
+      dataset.render_width:               480
+      dataset.render_height:              480
+      dataset.fast_mode:                  true
+      dataset.action_step_size:           0.03
+      dataset.settle_steps:               50
+      dataset.reset_warmup_steps:         200
+      dataset.render_step_before_capture: false
+      # minimal MPC budget for smoke-test
+      mpc.n_mpc:          5
+      mpc.n_sample:       64
+      mpc.n_update_iter:  50
+      # reward: default opt, default report
+      mpc.reward.opt_type:    "default"
+      mpc.reward.report_type: "eulerian"
+
+  # ── 2. GNN — IoU reporting ───────────────────────────────────────────────
+  - name: gnn_report_iou
+    description: "GNN, particle reward for optimization, IoU for reporting"
+    model:
+      type:     gnn
+      folder:   2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      # fast sim settings
+      dataset.render_width:               480
+      dataset.render_height:              480
+      dataset.fast_mode:                  true
+      dataset.action_step_size:           0.03
+      dataset.settle_steps:               50
+      dataset.reset_warmup_steps:         200
+      dataset.render_step_before_capture: false
+      # minimal MPC budget for smoke-test
+      mpc.n_mpc:          5
+      mpc.n_sample:       64
+      mpc.n_update_iter:  50
+      # reward: default opt, IoU report
+      mpc.reward.opt_type:    "default"
+      mpc.reward.report_type: "iou"
+
+  # ── 3. Splat — default reporting (baseline) ──────────────────────────────
+  - name: splat_report_default
+    description: "Splat heuristic, occupancy-sum reward for both optimization and reporting"
+    model:
+      type:          eulerian
+      folder:        None
+      iter_num:      -1
+      need_weights:  false
+      heuristic_type: splat
+    overrides:
+      # fast sim settings
+      dataset.render_width:               480
+      dataset.render_height:              480
+      dataset.fast_mode:                  true
+      dataset.action_step_size:           0.03
+      dataset.settle_steps:               50
+      dataset.reset_warmup_steps:         200
+      dataset.render_step_before_capture: false
+      # minimal MPC budget for smoke-test
+      mpc.n_mpc:          5
+      mpc.n_sample:       64
+      mpc.n_update_iter:  50
+      # reward: default opt, default report
+      mpc.reward.opt_type:    "default"
+      mpc.reward.report_type: "default"
+
+  # ── 4. Splat — IoU reporting ─────────────────────────────────────────────
+  - name: splat_report_iou
+    description: "Splat heuristic, occupancy-sum reward for optimization, IoU for reporting"
+    model:
+      type:          eulerian
+      folder:        None
+      iter_num:      -1
+      need_weights:  false
+      heuristic_type: splat
+    overrides:
+      # fast sim settings
+      dataset.render_width:               480
+      dataset.render_height:              480
+      dataset.fast_mode:                  true
+      dataset.action_step_size:           0.03
+      dataset.settle_steps:               50
+      dataset.reset_warmup_steps:         200
+      dataset.render_step_before_capture: false
+      # minimal MPC budget for smoke-test
+      mpc.n_mpc:          5
+      mpc.n_sample:       64
+      mpc.n_update_iter:  50
+      # reward: default opt, IoU report
+      mpc.reward.opt_type:    "default"
+      mpc.reward.report_type: "iou"

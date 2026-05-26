@@ -1,0 +1,98 @@
+{
+  "suite_config": "simple_mpc/config/experiments/compare_num_objects_fast_videos.yaml",
+  "base_config": "simple_mpc/config/config_simple.yaml",
+  "total_time_s": 1236.920593738556,
+  "n_experiments": 1,
+  "experiments": [
+    {
+      "name": "splat_20_objects",
+      "description": "Eulerian splat heuristic \u2014 20 carrots",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.num_objects": 20,
+        "dataset.render_width": 480,
+        "dataset.render_height": 480,
+        "dataset.fast_mode": true,
+        "dataset.action_step_size": 0.03,
+        "dataset.settle_steps": 50,
+        "dataset.reset_warmup_steps": 200,
+        "dataset.render_step_before_capture": false,
+        "mpc.n_sample": 512,
+        "mpc.n_update_iter": 50
+      },
+      "model_spec": {
+        "type": "eulerian",
+        "folder": "None",
+        "iter_num": -1,
+        "need_weights": false,
+        "heuristic_type": "splat"
+      },
+      "results_dir": "outputs/experiments/splat_20_objects/2026-05-26-06-41-46-055899",
+      "reward_gain": {
+        "mean": 47.503560638427736,
+        "std": 20.143725337808938,
+        "min": 23.085620880126953,
+        "max": 84.00603485107422,
+        "median": 36.34863471984863
+      },
+      "reward_final": {
+        "mean": -16.894039630889893,
+        "std": 23.478323441465815,
+        "min": -45.91284942626953,
+        "max": 16.49530792236328,
+        "median": -19.06264305114746
+      },
+      "reward_initial": {
+        "mean": -64.39760093688965,
+        "std": 10.661008059386715,
+        "min": -80.04109954833984,
+        "max": -45.383079528808594,
+        "median": -66.80862045288086
+      },
+      "success_rate": 1.0,
+      "compute_time_s": {
+        "mean": 8.29494771051407,
+        "std": 0.4325325805048289,
+        "min": 7.780992319583893,
+        "max": 9.259276546478272,
+        "median": 8.078175357341767
+      },
+      "compute_time_per_step_s": {
+        "mean": 0.8294947710514069,
+        "std": 0.04325325805048289,
+        "min": 0.7780992319583893,
+        "max": 0.9259276546478272,
+        "median": 0.8078175357341766
+      },
+      "occ_reward_gain": {
+        "mean": 47.503560638427736,
+        "std": 20.143725337808938,
+        "min": 23.085620880126953,
+        "max": 84.00603485107422,
+        "median": 36.34863471984863
+      },
+      "occ_reward_final": {
+        "mean": -16.894039630889893,
+        "std": 23.478323441465815,
+        "min": -45.91284942626953,
+        "max": 16.49530792236328,
+        "median": -19.06264305114746
+      },
+      "occ_reward_initial": {
+        "mean": -64.39760093688965,
+        "std": 10.661008059386715,
+        "min": -80.04109954833984,
+        "max": -45.383079528808594,
+        "median": -66.80862045288086
+      },
+      "mean_prediction_gap": {
+        "mean": 3.1243859267234804,
+        "std": 2.208201761764936,
+        "min": -2.0802603006362914,
+        "max": 5.554423809051514,
+        "median": 3.5675035953521728
+      },
+      "total_experiment_time_s": 1236.8356502056122
+    }
+  ]
+}

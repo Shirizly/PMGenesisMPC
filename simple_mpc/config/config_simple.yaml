@@ -1,0 +1,168 @@
+# simple_mpc/config/config_simple.yaml
+#
+# Configuration for simple_mpc.run_simple_mpc() with the Genesis simulator.
+#
+# When USE_SIMPLE_MPC = True in a visualize_*.py script, this file is loaded
+# IN PLACE OF config/mpc/config.yaml.  It contains every dataset field that
+# GenesisEnv and EulerianModelWrapper need, plus a simplified mpc section.
+#
+# Key differences from config.yaml:
+#   - mpc.n_update_iter: 100 (down from 200) — enough for random-init candidates
+#   - mpc.gd.lr: 0.01 (up from 0.001) — random starts are spread out, bigger
+#     steps needed; tune this if curves in optimizer_convergence.png are noisy
+#   - mpc.n_sample: 50 — one Adam run per candidate; diversity comes from the
+#     random initialisation, not from the sample count
+#   - No mpc.model_folder / iter_num / res_sel — not used by simple_mpc
+#
+# Edit only the mpc section for tuning; the dataset section should match
+# the Genesis-based GenesisEnv configuration.
+
+dataset:
+  init_pos: 'rand_spread'
+  global_scale: 0.6          # = 2 * cam_height (metres); cam at 0.3 m above box
+  obj: "chickpeas"           # material type; used by GenesisEnv._build_genesis_config
+  num_objects: 20            # number of particles spawned per reset
+  cam_height: 0.3            # camera height above box floor (metres)
+  cam_fov: 45.0              # camera vertical field-of-view (degrees)
+  wkspc_w: 0.064             # half-width of Genesis box (metres; full box = 0.128 m)
+  render_width: 720
+  render_height: 720
+  # Genesis material / physics parameters
+  n_particles: 20            # alias for num_objects; passed to SandboxManipulation
+  material_shape: 'cube'
+  particle_size: 0.005        # metres
+  plate_speed: 0.125         # pusher plate speed (m/s)
+  box_height: 0.04           # box interior height (metres)
+  box_wall_thickness: 0.02   # box wall thickness (metres)
+  # runtime flags
+  headless: True
+  fast_mode: False                # if True: faster defaults for step size + settling
+  action_step_size: 0.02          # larger => fewer interpolation steps (faster)
+  settle_steps: 200               # fewer post-action settle steps => faster
+  reset_warmup_steps: 500         # fewer reset warmup steps => faster episode reset
+  render_step_before_capture: True  # disable for extra speed if physics already stepped
+  # Pusher plate geometry — used by PhysicsAwareActionSampler and genesis_env.step
+  plate_length: 0.04           # plate long-axis length (metres); matches Genesis config
+  plate_width:  0.002          # plate short-axis width (metres)
+  plate_safety_margin: 0.01    # extra clearance from box walls (metres)
+  # Physics parameters for UNetFiLM inference.
+  # Set these to match the Genesis simulation material / box parameters.
+  particle_friction: 1.0       # material particle friction (config.material.friction)
+  particle_density: 2000.0     # kg/m³ (config.material.density)
+  box_friction: 0.5            # box wall friction (config.box.friction)
+
+mpc:
+  # ── model selection ───────────────────────────────────────────────────────
+  # type: which dynamics model to use as the MPC predictor.
+  #   'splat' | 'fluid' | 'spread' — heuristic Eulerian push models (no weights)
+  #   'UNetFiLM'                   — learned model from GranularDynamics2
+  # weights_path: path to the saved .pth checkpoint (required for UNetFiLM).
+  # physics_dim: physics embedding dimension of the UNetFiLM model (default 3).
+  model:
+    type: 'spread'
+    weights_path: ''             # e.g. 'runs/unetfilm/best.pth'
+    physics_dim: 3
+
+  # ── core MPC parameters ────────────────────────────────────────────────────
+  n_mpc: 20           # number of real-world steps to execute
+  n_look_ahead: 1    # planning horizon (steps rolled out in model space)
+  n_sample: 512       # candidates per optimizer call (each randomly initialised)
+  n_update_iter: 120  # Adam iterations per MPC step
+  # particle_num: 30   # GNN adapter: fixed particle count per observation
+
+  # ── debug visualization ────────────────────────────────────────────────────
+  # Produces two kinds of outputs per MPC step (when enabled: True):
+  #
+  #   step_NNN/iter_MMMM_topK.png
+  #     Saved every `save_every_n_iters` Adam iterations (and at iter 0 and
+  #     the last iter).  Shows the top-K candidates ranked by reward:
+  #       col 0: input occupancy (same for all)
+  #       col 1: predicted occupancy after the push action
+  #       col 2: pred * goal_score  ← "reward density" — WHERE the reward
+  #              comes from geometrically; compare with the score map to check
+  #              if the optimizer is actually moving material toward the goal.
+  #
+  #   step_NNN/winner.png
+  #     Saved once per MPC step after the environment executes the action.
+  #     2 rows x 3 cols:
+  #       row 0: input occ | predicted occ | goal score map
+  #       row 1: input*score | pred*score | occ change (green=in, red=out)
+  #     Titles show pred_gain vs act_gain.  A large gap = push model is
+  #     over-estimating how much material moves.
+  debug:
+    enabled: True
+    output_dir: 'outputs/simple_mpc_debug'
+    top_k: 5                  # candidates shown per snapshot
+    save_every_n_iters: 25    # snapshot frequency (also always saves iter 0 and last)
+    benchmark_throughput: True  # set True to print candidates/sec table at experiment startup
+
+  # ── reward shaping ───────────────────────────────────────────────────
+  # empty_penalty > 0: non-goal voxels carry negative score proportional to
+  # their distance from the goal (normalized to [-empty_penalty, 0]).
+  # This penalizes material that stays in / moves into the wrong region,
+  # preventing the optimizer from choosing near-zero "safe" actions.
+  # 0.0 = old behaviour (all scores ≥ 0, no penalty for empty-space material).
+  reward:
+    empty_penalty: 1.0
+
+  gd:
+    lr: 0.05          # Adam learning rate — raise if Δr curves are flat;
+                      # lower if they oscillate (reward drops after peaking)
+    beta_filter: 0.7  # not used by simple_mpc; kept for structural compatibility
+
+  # ── task ──────────────────────────────────────────────────────────────────
+  task:
+    type: 'target_shape'    # 'target_control' | 'target_shape'
+    goal_row: 360           # used when type = 'target_control'
+    goal_col: 360
+    goal_r: 75
+    target_char: 'T'        # used when type = 'target_shape'
+
+  # ── output ────────────────────────────────────────────────────────────────
+  output_dir: 'outputs/simple_mpc'
+  video_fps: 0.5
+
+  # ── visualize_prediction_eulerian.py overrides (optional) ─────────────────
+  # prediction_viz:
+  #   n_mpc: 5          # run fewer steps for quick debugging
+  #   n_update_iter: 50
+
+  # ── kept for structural compatibility with visualize_*.py ─────────────────
+  mpc_type: 'GD'
+  gd_loop: 1
+  time_lim: .inf      # no per-step wall-clock budget in simple MPC
+  sigma: 0.3
+  mppi:
+    beta_filter: 0.7
+    reward_weight: 0.1
+
+  # Fields read by visualize_mpc.py but unused by simple_mpc:
+  model_folder: "2023-01-28-10-42-05-114323"
+  iter_num: 1000
+  res_sel:
+    active: False
+    model_folder: '2023-01-30-16-17-30-292500'
+    iter_num: -1
+
+  visualization:
+    save_images: True
+    save_video: True
+    video_fps: 2
+    video_speedup: 1.0
+    plot_rewards: True
+    output_dir: 'outputs/simple_mpc'
+
+# Needed by EulerianModelWrapper.default_bounds() and occupancy grid setup.
+# (Identical to the main config — do not change without changing config.yaml.)
+train:
+  n_history: 1
+  n_rollout: 5
+  particle:
+    nf_effect: 64
+    adj_thresh: 0.08
+    add_delta: False
+    resume:
+      active: False
+      epoch: 0
+      iter: 0
+      folder: 'None'

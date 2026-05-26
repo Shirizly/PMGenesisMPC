@@ -2,7 +2,7 @@ import genesis as gs
 import genesis.utils.geom as gu 
 import numpy as np
 import yaml
-from utilities.materials import *
+from .utilities.materials import *
 from pathlib import Path
 import os
 import math
@@ -67,7 +67,14 @@ class SandboxManipulation:
 
         self._init_scene()
         self._add_entities()
-        
+
+        # Active particle count — may be reduced per-experiment via set_n_active()
+        # to "park" excess particles outside the camera's field of view.
+        self._n_active = self._material_params["n_particles"]
+        # Parking position: far from box, above ground plane (outside camera FOV)
+        _bw = self._box_params["vol"][0]
+        self._park_pos = [_bw * 15.0, 0.0, self._wall_thickness * 0.5 + 0.005]
+
         ###########
         # HELPERS #
         ###########
@@ -109,10 +116,10 @@ class SandboxManipulation:
         print(message, flush=True)
 
     def _step_scene(self):
-                    
+        _show = self._debug or self._viewer_type is not None
         self._scene.step(
-            update_visualizer=self._debug,
-            refresh_visualizer=self._debug,
+            update_visualizer=_show,
+            refresh_visualizer=_show,
         )
 
     def _init_scene(self):
@@ -162,7 +169,7 @@ class SandboxManipulation:
             vis_options=gs.options.VisOptions(
                 show_link_frame=self._debug and self._viewer_type == "observer",
             ),
-            show_viewer=self._debug
+            show_viewer=self._debug or self._viewer_type is not None
         )
         self._scene.profiling_options.show_FPS=False
     
@@ -441,10 +448,23 @@ class SandboxManipulation:
             self._sampled_params["density"] = particle_densities.tolist()
         self._sampled_params["box_friction"] = box_friction
 
+    def set_n_active(self, n: int) -> None:
+        """Set how many particles are active (placed inside the box) on reset.
+
+        Particles with indices ``[n, len(material))`` are moved to a parking
+        position outside the camera's field of view on the next call to
+        ``shuffle_particles()``.  The change takes effect on the next reset.
+        """
+        n_total = len(self.material)
+        if not (0 <= n <= n_total):
+            raise ValueError(f"n must be in [0, {n_total}], got {n}")
+        self._n_active = n
+
     def shuffle_particles(self):
         n_particles = len(self.material)
         if n_particles == 0:
             return
+        n_active = getattr(self, '_n_active', n_particles)
 
         max_retries = 10
         for attempt in range(max_retries):
@@ -479,7 +499,8 @@ class SandboxManipulation:
                 positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
                 placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
                 order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
-                candidate_batch = max(1024, min(4096, 64 * n_particles))
+                order = order[order < n_active]  # only place the first n_active particles
+                candidate_batch = max(1024, min(4096, 64 * max(n_active, 1)))
                 min_gap = 1e-3
 
                 for particle_idx_tensor in order:
@@ -514,6 +535,11 @@ class SandboxManipulation:
                     placed[particle_idx] = True
 
                 envs_idx = torch.arange(self._n_envs, device=gs.device)
+                # Move parked (inactive) particles to a fixed spot outside the box
+                if n_active < n_particles:
+                    park = torch.tensor(self._park_pos, dtype=torch.float32, device=gs.device)
+                    positions[:, n_active:, :] = park.view(1, 1, 3).expand(
+                        self._n_envs, n_particles - n_active, 3)
                 for particle_idx, particle in enumerate(self.material):
                     particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
                     particle.set_quat(self._random_particle_quats(particle, self._n_envs), envs_idx=envs_idx)

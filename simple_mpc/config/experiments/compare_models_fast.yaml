@@ -1,0 +1,84 @@
+# Fast experiment preset for quicker iteration.
+#
+# Usage:
+#   python run_experiments.py config/experiments/compare_models_fast.yaml
+#
+# This keeps visual rendering enabled (stable path), but reduces expensive
+# simulator settling, render resolution, and MPC optimization budget.
+
+base_config: config/mpc/config_simple.yaml
+
+output:
+  root_dir: outputs/experiments
+  experiment_name: compare_models_fast
+
+  save_rewards: true
+  save_actions: true
+  save_per_episode_npz: true
+  save_reward_plot: true
+  save_raw_obs: false
+  save_states: false
+  save_prediction_videos: false
+
+  benchmark_throughput: false
+  success_threshold: 0.0
+
+episodes:
+  n_episodes: 1
+  random_seed_base: 42
+
+experiments:
+  - name: gnn_fast
+    description: "GNN baseline tuned for faster simulator + MPC iteration"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 256
+      mpc.n_update_iter: 50
+
+  - name: heuristic_splat_fast
+    description: "Eulerian heuristic (splat) with the same fast settings"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 256
+      mpc.n_update_iter: 50
+
+  - name: heuristic_spread_fast
+    description: "Eulerian heuristic (spread) with the same fast settings"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: spread
+    overrides:
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 256
+      mpc.n_update_iter: 50

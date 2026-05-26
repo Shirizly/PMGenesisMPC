@@ -1,0 +1,218 @@
+# config/experiments/compare_models.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+# Experiment suite: compare MPC configurations across episodes.
+#
+# Usage:
+#   python run_experiments.py config/experiments/compare_models.yaml
+#   python run_experiments.py config/experiments/compare_models.yaml --dry-run
+#   python run_experiments.py config/experiments/compare_models.yaml --only gnn_baseline gnn_more_samples
+#
+# How it works:
+#   1. base_config is loaded as the shared starting point for every experiment.
+#   2. Each experiment entry applies its `overrides` on top, using dot-notation
+#      keys (e.g. "mpc.n_sample: 1024" sets cfg['mpc']['n_sample'] = 1024).
+#   3. n_episodes episodes are run per experiment; results are saved under
+#      output.root_dir / <experiment_name_timestamp> / <experiment.name> /
+#
+# Adding a new experiment: copy any entry below, give it a unique `name`, and
+# edit only the lines that differ from the baseline.
+# ──────────────────────────────────────────────────────────────────────────────
+
+base_config: simple_mpc/config/config_simple.yaml
+
+
+# ── output settings ───────────────────────────────────────────────────────────
+output:
+  root_dir:          outputs/experiments
+  experiment_name:   compare_models       # subfolder prefix; timestamp appended
+
+  # Per-episode files (saved inside episode_NNN/):
+  save_rewards:          true   # rewards.npy        (n_mpc+1,)  tiny, always useful
+  save_actions:          true   # actions.npy        (n_mpc, 4)
+  save_per_episode_npz:  true   # episode_data.npz   rewards+actions+rew_means+pred_rewards
+  save_reward_plot:      true   # rewards.png        per episode; summary plot per experiment
+  save_raw_obs:          true  # raw_obs.npy        (n_mpc+1, H, W, 5)  — large!
+  save_states:           false  # states.npy         particle clouds per step  — large!
+
+  # Per-episode prediction comparison video (mirrors visualize_prediction*.py panels).
+  # GNN experiments → prediction_video.avi (particle overlays)
+  # Eulerian experiments → prediction_video_eulerian.avi (occ overlays + heatmaps)
+  # Requires save_raw_obs: true to have rendered frames available.
+  save_prediction_videos: true
+  prediction_video_fps:   0.5
+
+  # Run GPU throughput benchmark at the start of each experiment (once per experiment).
+  # Shows candidates/second for different batch sizes. Works for both GNN and Eulerian.
+  benchmark_throughput: false
+
+  # An episode is counted as "success" if reward_gain (= final − initial) exceeds this.
+  success_threshold: 0.0
+
+
+# ── shared episode settings ───────────────────────────────────────────────────
+episodes:
+  n_episodes: 5             # default per experiment; can override per entry
+
+  # Episode i uses set_seed(random_seed_base + i) for reproducibility.
+  random_seed_base: 42
+
+  # Optional: supply a fixed .npy env positions array so every episode starts
+  # from the same pile layout (good for isolating algorithm differences).
+  # Comment out to let env.reset() randomise the pile position each time.
+  # fixed_initial_pos_file: data/init_pos/same_init_diff_goal_pos.npy
+
+
+# ── experiments ───────────────────────────────────────────────────────────────
+# Required keys per entry:
+#   name        string, no spaces — used as the output subfolder name
+#   model:
+#     type:     'gnn' | 'eulerian'
+#     folder:   path relative to data/gnn_dyn_model/ (or absolute)
+#     iter_num: -1 loads net_best.pth; any positive int loads that checkpoint
+#
+# Optional keys:
+#   description   printed in the log (does not affect results)
+#   n_episodes    overrides episodes.n_episodes for this entry only
+#   overrides     dict of dot-notation key → value; applied on top of base_config
+#   model.need_weights: bool (default true); set false for heuristic-based models
+#   model.heuristic_type: for Eulerian heuristics, one of 'splat'|'fluid'|'spread' (default 'spread')
+#
+# All mpc.*, dataset.*, train.* keys from base_config can be overridden.
+# Examples of commonly useful overrides:
+#   mpc.n_mpc:          5        # number of real-world push steps
+#   mpc.n_look_ahead:   1        # GNN rollout horizon per optimisation step
+#   mpc.n_sample:       512      # candidate actions per optimisation iteration
+#   mpc.n_update_iter:  50       # Adam iterations per MPC step
+#   mpc.gd.lr:          0.05     # Adam learning rate
+#   mpc.particle_num:   50       # GNN: particles used per observation
+#   mpc.task.type:      target_control | target_shape
+#   mpc.task.goal_row:  360      # pixel row of goal centre  (target_control)
+#   mpc.task.goal_col:  360      # pixel col of goal centre  (target_control)
+#   mpc.task.goal_r:    80       # goal circle radius in pixels
+#   mpc.task.target_char: C      # target letter/shape       (target_shape)
+#   mpc.reward.opt_type:     "default"     # reward type for optimization: "default" | "iou"
+#   mpc.reward.report_type:  "default"     # reward type for reporting (null=same as opt_type)
+#                                          # GNN reporting options: "default" | "iou" | "eulerian"
+#                                          # Eulerian reporting options: "default" | "iou"
+
+experiments:
+
+  # ── 1. Heuristic Splat — no look-ahead ──────────────────────────────────────
+  - name:        splat_no_lookahead
+    description: "Eulerian heuristic splat model — default look-ahead"
+    model:
+      type:     eulerian
+      folder:   None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+
+  # ── 2. Heuristic Splat — 1-step look-ahead ──────────────────────────────────
+  - name:        splat_1_lookahead
+    description: "Eulerian heuristic splat model — n_look_ahead 2"
+    model:
+      type:     eulerian
+      folder:   None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      mpc.n_look_ahead: 2
+
+  # ── 3. Heuristic Splat — 2-step look-ahead ──────────────────────────────────
+  - name:        splat_2_lookahead
+    description: "Eulerian heuristic splat model — n_look_ahead 4"
+    model:
+      type:     eulerian
+      folder:   None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      mpc.n_look_ahead: 4
+
+
+  # # ── 2. Heuristic Splat ──────────────────────────────────────────────────────
+  # - name:        Heuristic_Splat
+  #   description: "Eulerian heuristic push model (no learned weights)"
+  #   model:
+  #     type:     eulerian
+  #     folder:   None  # no checkpoint needed for heuristic model
+  #     iter_num: -1
+  #     need_weights: false
+  #     heuristic_type: splat
+
+  # # ── 3. Heuristic Spread ──────────────────────────────────────────────────────
+  # - name:        Heuristic_Spread
+  #   description: "Eulerian heuristic push model (no learned weights)"
+  #   model:
+  #     type:     eulerian
+  #     folder:   None  # no checkpoint needed for heuristic model
+  #     iter_num: -1
+  #     need_weights: false
+  #     heuristic_type: spread
+
+  # ── 3. More Adam iterations (same sample budget) ─────────────────────────────
+  # - name:        gnn_more_iters
+  #   description: "More gradient-descent iterations; deeper local optimisation"
+  #   n_episodes:  5
+  #   model:
+  #     type:     gnn
+  #     folder:   my_run
+  #     iter_num: -1
+  #   overrides:
+  #     mpc.n_update_iter: 200
+
+  # ── 4. Two-step look-ahead ───────────────────────────────────────────────────
+  # - name:        gnn_lookahead_2
+  #   description: "Plan two pushes ahead instead of one"
+  #   n_episodes:  5
+  #   model:
+  #     type:     gnn
+  #     folder:   my_run
+  #     iter_num: -1
+  #   overrides:
+  #     mpc.n_look_ahead: 2
+
+  # ── 5. More MPC steps ────────────────────────────────────────────────────────
+  # - name:        gnn_10_steps
+  #   description: "10 MPC steps — more time to manipulate"
+  #   n_episodes:  5
+  #   model:
+  #     type:     gnn
+  #     folder:   my_run
+  #     iter_num: -1
+  #   overrides:
+  #     mpc.n_mpc: 10
+
+  # ── 6. Higher learning rate ───────────────────────────────────────────────────
+  # - name:        gnn_high_lr
+  #   description: "Higher Adam lr — faster convergence, potentially noisier"
+  #   n_episodes:  5
+  #   model:
+  #     type:     gnn
+  #     folder:   my_run
+  #     iter_num: -1
+  #   overrides:
+  #     mpc.gd.lr: 0.1
+
+  # ── 7. Alternative checkpoint ─────────────────────────────────────────────────
+  #  Uncomment and fill in folder to compare two training runs.
+  # - name:        gnn_run_B
+  #   description: "GNN model from an alternative training run"
+  #   n_episodes:  5
+  #   model:
+  #     type:     gnn
+  #     folder:   my_run_B
+  #     iter_num: -1
+
+  # ── 8. Eulerian push model (occupancy-grid MPC) ───────────────────────────────
+  #  Uncomment to include the Eulerian model.  Eulerian checkpoints live in
+  #  data/eulerian_model/; see model/eulerian_wrapper.py for loading details.
+  # - name:        eulerian_baseline
+  #   description: "Eulerian push model — default hyperparameters"
+  #   n_episodes:  5
+  #   model:
+  #     type:     eulerian
+  #     folder:   my_eulerian_run    # relative to data/eulerian_model/
+  #     iter_num: -1

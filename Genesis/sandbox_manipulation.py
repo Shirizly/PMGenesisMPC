@@ -2,7 +2,7 @@ import genesis as gs
 import genesis.utils.geom as gu 
 import numpy as np
 import yaml
-from utilities.materials import *
+from .utilities.materials import *
 import quaternion as qu
 from pathlib import Path
 import pickle
