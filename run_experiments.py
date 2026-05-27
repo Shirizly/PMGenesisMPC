@@ -235,11 +235,17 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
         if not weights_path:
             raise ValueError("'weights_path' is required in model_spec for UNetFiLM")
 
-        # Physics parameters from dataset config
+        # Physics parameters normalised to [0,1] — matching PileSweepData._det_physics:
+        #   friction    → (x - 0.05) / (0.50 - 0.05)
+        #   density     → (x -  750) / (5000 -  750)
+        #   box_friction→ (x - 0.05) / (0.50 - 0.05)
+        _f  = cfg['dataset'].get('particle_friction', 0.05)
+        _d  = cfg['dataset'].get('particle_density',  750.0)
+        _bf = cfg['dataset'].get('box_friction',       0.05)
         physics_vec = torch.tensor([
-            cfg['dataset'].get('particle_friction', 1.0),
-            cfg['dataset'].get('particle_density', 1000.0),
-            cfg['dataset'].get('box_friction', 0.5),
+            (_f  - 0.05) / (0.50 - 0.05),
+            (_d  -  750) / (5000 -  750),
+            (_bf - 0.05) / (0.50 - 0.05),
         ], dtype=torch.float32)
 
         # Grid resolution: default 1 px/mm, overridable via model_spec['grid_n']
@@ -295,11 +301,14 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
         if not weights_path:
             raise ValueError("'weights_path' is required in model_spec for UNetFiLM")
 
-        # Physics parameters from dataset config
+        # Physics parameters normalised to [0,1] — matching PileSweepData._det_physics.
+        _f  = cfg['dataset'].get('particle_friction', 0.05)
+        _d  = cfg['dataset'].get('particle_density',  750.0)
+        _bf = cfg['dataset'].get('box_friction',       0.05)
         physics_vec = torch.tensor([
-            cfg['dataset'].get('particle_friction', 1.0),
-            cfg['dataset'].get('particle_density', 1000.0),
-            cfg['dataset'].get('box_friction', 0.5),
+            (_f  - 0.05) / (0.50 - 0.05),
+            (_d  -  750) / (5000 -  750),
+            (_bf - 0.05) / (0.50 - 0.05),
         ], dtype=torch.float32)
 
         # Grid resolution: default 1 px/mm, overridable via model_spec['grid_n']

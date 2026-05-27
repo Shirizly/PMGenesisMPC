@@ -291,6 +291,7 @@ def run_simple_mpc(
             ev2.record()
 
             loss = -rew_seqs.sum()
+            torch.nn.utils.clip_grad_norm_([act_seqs], max_norm=1.0)
             optimizer.zero_grad()
             loss.backward()
             # -- gradient norm: near-zero means the push misses the material --

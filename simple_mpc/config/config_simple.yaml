@@ -55,9 +55,9 @@ dataset:
   plate_safety_margin: 0.01    # extra clearance from box walls (metres)
   # Physics parameters for UNetFiLM inference.
   # Set these to match the Genesis simulation material / box parameters.
-  particle_friction: 1.0       # material particle friction (config.material.friction)
-  particle_density: 2000.0     # kg/m³ (config.material.density)
-  box_friction: 0.5            # box wall friction (config.box.friction)
+  particle_friction: 0.25      # material particle friction (config.material.friction)
+  particle_density: 750.0      # kg/m³ (config.material.density)
+  box_friction: 0.3           # box wall friction (config.box.friction)
 
 mpc:
   # ── model selection ───────────────────────────────────────────────────────
@@ -111,10 +111,10 @@ mpc:
   # preventing the optimizer from choosing near-zero "safe" actions.
   # 0.0 = old behaviour (all scores ≥ 0, no penalty for empty-space material).
   reward:
-    empty_penalty: 1.0
+    empty_penalty: 0.2
 
   gd:
-    lr: 0.05          # Adam learning rate — raise if Δr curves are flat;
+    lr: 0.002          # Adam learning rate — raise if Δr curves are flat;
                       # lower if they oscillate (reward drops after peaking)
     beta_filter: 0.7  # not used by simple_mpc; kept for structural compatibility
 

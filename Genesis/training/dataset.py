@@ -8,7 +8,7 @@ import os
 import math
 import numpy as np
 import cv2
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation as R
 
 TO_PXL = 1e3
 
@@ -22,25 +22,35 @@ class PileSweepData(Dataset):
             split: str | None = None,
             val_pct: int = 5,
             test_pct: int = 5,
+            resolution_scale: float = 1.0,
+            include_sweep_removed: bool = False,
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
 
-            @param paths: list of folder paths or a single folder path containing data files
+            @param paths: list of folder paths or a single folder path containing data files.
+                Relative paths are resolved under Genesis/data; absolute paths are used as-is.
             @param run: number of a specific run
             @param split: one of "train", "val", "test", or None (all data).
-                Each run file is assigned a split deterministically by hashing its
-                path, so adding new runs never reassigns existing ones and every
-                physics group appears in all three splits.
-            @param val_pct: percentage of runs assigned to validation (default 10)
-            @param test_pct: percentage of runs assigned to test (default 10)
+                Splits are deterministic and stratified per leaf data folder, so each
+                physical geometry group contributes to train/val/test when possible.
+                Whole runs with the same nominal physics params stay in the same split.
+            @param val_pct: percentage of physics groups assigned to validation
+            @param test_pct: percentage of physics groups assigned to test
         """
         assert split in (None, "train", "val", "test"), f"Invalid split: {split!r}"
+        if val_pct < 0 or test_pct < 0 or val_pct + test_pct >= 100:
+            raise ValueError("val_pct and test_pct must be non-negative and sum to less than 100.")
+        if resolution_scale <= 0:
+            raise ValueError("resolution_scale must be positive.")
         self.runs = []
         self.configs = []
         self._run_lengths = []
         self._plate_cache = {}
         self._physics = torch.zeros((3,), dtype=torch.float32)
+        self.resolution_scale = float(resolution_scale)
+        self.to_pxl = TO_PXL * self.resolution_scale
+        self.include_sweep_removed = bool(include_sweep_removed)
 
 
         parentpath = Path(__file__).parent.parent
@@ -48,7 +58,7 @@ class PileSweepData(Dataset):
             paths = [paths]
 
         for path in paths:
-            full_path = parentpath / "data" / path
+            full_path = self._resolve_data_path(path, parentpath)
             if not full_path.exists():
                 raise FileNotFoundError(f"Data folder not found: {full_path}")
 
@@ -59,10 +69,7 @@ class PileSweepData(Dataset):
                 )
 
             if split is not None:
-                run_files = [
-                    (df, cf) for df, cf in run_files
-                    if self._assign_split(df, full_path, val_pct, test_pct) == split
-                ]
+                run_files = self._filter_split(run_files, split, val_pct, test_pct)
 
             for data_file, config_file in run_files:
                 self.runs.append(torch.load(data_file, map_location="cpu"))
@@ -99,40 +106,27 @@ class PileSweepData(Dataset):
 
         # Box grid, dimension, and center
         x_dim, y_dim, _ = config["box"]["vol"]
-        x_pxl, y_pxl = int(x_dim * TO_PXL), int(y_dim * TO_PXL)
+        x_pxl = max(1, int(round(x_dim * self.to_pxl)))
+        y_pxl = max(1, int(round(y_dim * self.to_pxl)))
         self.ctr_in_PXL = torch.tensor((round(x_pxl / 2), round(y_pxl / 2), 0))
 
-        self._input_grid = torch.zeros((2, x_pxl, y_pxl), dtype=torch.float32)
+        input_channels = 3 if self.include_sweep_removed else 2
+        self._input_grid = torch.zeros((input_channels, x_pxl, y_pxl), dtype=torch.float32)
         self._output_grid = torch.zeros((x_pxl, y_pxl), dtype=torch.float32)
 
         # Plate grid and dimension
         x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
-        self._precompute_plate_grid(x_dim_plt, y_dim_plt)
         self._plt_dim_in_m = (x_dim_plt, y_dim_plt)
-
-    def _precompute_plate_grid(
-            self,
-            x_dim_plt,
-            y_dim_plt
-        ) -> None:
-        """
-        Draws an occupancy grid for the plate in neutral position.
-        """
-        
-        plt_pxl = int(max(x_dim_plt, y_dim_plt) * TO_PXL)
-        self._base_plate_grid = torch.zeros((plt_pxl, plt_pxl))
-        
-        # Draw plate on grid
-        self._color_grid(
-            grid=self._base_plate_grid,
-            x=plt_pxl/2,
-            y=plt_pxl/2,
-            size=(x_dim_plt*TO_PXL, y_dim_plt*TO_PXL),
-            drawing=1
-        )
 
     def _count_samples_in_run(self, run):
         return run["states"].shape[0]
+
+    @staticmethod
+    def _resolve_data_path(path: str | Path, parentpath: Path) -> Path:
+        path = Path(path)
+        if path.is_absolute():
+            return path
+        return parentpath / "data" / path
 
     def _collect_run_paths(self, root: Path, run: int | None):
         run_paths = []
@@ -170,17 +164,69 @@ class PileSweepData(Dataset):
 
         return run_paths
 
+    @classmethod
+    def _filter_split(
+        cls,
+        run_files: list[tuple[Path, Path]],
+        split: str,
+        val_pct: int,
+        test_pct: int,
+    ) -> list[tuple[Path, Path]]:
+        split_by_file = {}
+        folder_groups: dict[Path, dict[str, list[tuple[Path, Path]]]] = {}
+
+        for data_file, config_file in run_files:
+            cfg = yaml.full_load(config_file.read_text())
+            physics_key = cls._physics_key(cfg)
+            folder_groups.setdefault(data_file.parent, {}).setdefault(
+                physics_key, []
+            ).append((data_file, config_file))
+
+        for physics_groups in folder_groups.values():
+            groups = sorted(
+                physics_groups.items(),
+                key=lambda item: hashlib.md5(item[0].encode()).hexdigest(),
+            )
+            assignments = cls._assign_group_splits(len(groups), val_pct, test_pct)
+            for (_, group), assigned_split in zip(groups, assignments):
+                for data_file, _ in group:
+                    split_by_file[data_file] = assigned_split
+
+        return [
+            (data_file, config_file)
+            for data_file, config_file in run_files
+            if split_by_file[data_file] == split
+        ]
+
     @staticmethod
-    def _assign_split(data_file: Path, root: Path, val_pct: int, test_pct: int) -> str:
-        """Deterministically assigns a run to train/val/test by hashing its physics
-        identity (shape, n_particles, particle_size, mat_friction, density, box_friction).
-        All runs sharing the same physics params land in the same split, so collecting
-        multiple trajectories per condition never causes leakage."""
-        config_file = data_file.with_name(
-            data_file.stem.replace("_data", "") + "_config.yaml"
+    def _assign_group_splits(num_groups: int, val_pct: int, test_pct: int) -> list[str]:
+        if num_groups <= 0:
+            return []
+
+        test_count = round(num_groups * test_pct / 100)
+        val_count = round(num_groups * val_pct / 100)
+
+        if test_pct > 0 and test_count == 0 and num_groups >= 3:
+            test_count = 1
+        if val_pct > 0 and val_count == 0 and num_groups - test_count >= 2:
+            val_count = 1
+
+        if test_count + val_count >= num_groups:
+            overflow = test_count + val_count - (num_groups - 1)
+            val_count = max(0, val_count - overflow)
+            overflow = test_count + val_count - (num_groups - 1)
+            test_count = max(0, test_count - overflow)
+
+        return (
+            ["test"] * test_count
+            + ["val"] * val_count
+            + ["train"] * (num_groups - test_count - val_count)
         )
-        cfg = yaml.full_load(config_file.read_text())
-        key = "%s|%d|%.6f|%.6f|%.6f|%.6f" % (
+
+    @staticmethod
+    def _physics_key(cfg: dict) -> str:
+        """Nominal physics identity used to keep equivalent runs in one split."""
+        return "%s|%d|%.6f|%.6f|%.6f|%.6f" % (
             cfg["material"]["shape"],
             cfg["material"]["n_particles"],
             cfg["material"]["particle_size"],
@@ -188,6 +234,15 @@ class PileSweepData(Dataset):
             cfg["material"]["density"],
             cfg["box"]["friction"],
         )
+
+    @classmethod
+    def _assign_split(cls, data_file: Path, root: Path, val_pct: int, test_pct: int) -> str:
+        """Backward-compatible split helper for a single run file."""
+        config_file = data_file.with_name(
+            data_file.stem.replace("_data", "") + "_config.yaml"
+        )
+        cfg = yaml.full_load(config_file.read_text())
+        key = cls._physics_key(cfg)
         h = int(hashlib.md5(key.encode()).hexdigest(), 16) % 100
         if h < test_pct:
             return "test"
@@ -209,10 +264,10 @@ class PileSweepData(Dataset):
         particles = run["states"][index].clone()
         particles_ = run["states_"][index].clone()
 
-        particles[:, :3] = particles[:, :3] * TO_PXL + self.ctr_in_PXL
-        particles_[:, :3] = particles_[:, :3] * TO_PXL + self.ctr_in_PXL
-        plate_pos = run["p_starts"][index] * TO_PXL + self.ctr_in_PXL
-        plate_pos_ = run["p_stops"][index] * TO_PXL + self.ctr_in_PXL
+        particles[:, :3] = particles[:, :3] * self.to_pxl + self.ctr_in_PXL
+        particles_[:, :3] = particles_[:, :3] * self.to_pxl + self.ctr_in_PXL
+        plate_pos = run["p_starts"][index] * self.to_pxl + self.ctr_in_PXL
+        plate_pos_ = run["p_stops"][index] * self.to_pxl + self.ctr_in_PXL
         angle = run["angles"][index]
 
         return particles, particles_, plate_pos, plate_pos_, angle
@@ -247,13 +302,30 @@ class PileSweepData(Dataset):
             dimensions = particle_sizes[idx]
             center_x = float(particle_state[0])
             center_y = float(particle_state[1])
+            upright_cylinder = False
 
-            if shape == "sphere":
+            if shape == "cylinder":
+                def cylinder_is_standing(quat):
+                    local_up = np.array([0, 0, 1])
+                    world_up = np.array([0, 0, 1])
+
+                    rot = R.from_quat(quat)
+                    
+                    rotated_axis = rot.apply(local_up)
+                
+                    alignment = abs(np.dot(rotated_axis, world_up))
+
+                    return alignment >= 0.5
+                
+                if cylinder_is_standing(particle_state[3:].numpy()):
+                    upright_cylinder = True
+
+            if shape == "sphere" or (upright_cylinder and shape=="cylinder"):
                 diameter, _, _ = dimensions
                 cv2.circle(
                     grid_np,
                     (int(round(center_x)), int(round(center_y))),
-                    int(round(diameter * TO_PXL * 0.5)),
+                    max(1, int(round(diameter * self.to_pxl * 0.5))),
                     color=1,
                     thickness=-1,
                 )
@@ -262,148 +334,113 @@ class PileSweepData(Dataset):
             draw_box_points(
                 grid_np,
                 (center_x, center_y),
-                (float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL),
+                (float(dimensions[0]) * self.to_pxl, float(dimensions[1]) * self.to_pxl),
                 quaternion_to_yaw(particle_state[3:]),
                 1
             )
-
-            # width, height = float(dimensions[0]) * TO_PXL, float(dimensions[1]) * TO_PXL
-            # half_w = width * 0.5
-            # half_h = height * 0.5
-
-            # corners = np.array(
-            #     [
-            #         [-half_w, -half_h],
-            #         [half_w, -half_h],
-            #         [half_w, half_h],
-            #         [-half_w, half_h],
-            #     ],
-            #     dtype=np.float32,
-            # )
-            # rot = Rotation.from_quat(particle_state[3:], scalar_first = True)
-            # yaw = float(rot.as_euler("xyz", degrees=False)[2]) * math.pi / 180.0
-            # if abs(yaw) > 1e-6:
-            #     rotation = np.array(
-            #         [
-            #             [math.cos(yaw), -math.sin(yaw)],
-            #             [math.sin(yaw), math.cos(yaw)],
-            #         ],
-            #         dtype=np.float32,
-            #     )
-            #     corners = corners @ rotation.T
-
-            # pts = np.round(corners + np.array([center_x, center_y], dtype=np.float32)).astype(np.int32)
-            # cv2.fillPoly(grid_np, [pts], color=1)
-
-    # def _rotate_plate_torch(self, plate_grid, angle):
-    #     if isinstance(angle, torch.Tensor):
-    #         angle_rad = float(angle.item())
-    #     else:
-    #         angle_rad = float(angle)
-
-    #     cos_a = math.cos(angle_rad)
-    #     sin_a = math.sin(angle_rad)
-
-    #     # IMPORTANT: image-space rotation matrix
-    #     rotation_matrix = torch.tensor(
-    #         [[cos_a, sin_a],
-    #         [-sin_a, cos_a]],
-    #         dtype=torch.float32,
-    #         device=plate_grid.device,
-    #     )
-
-    #     grid = plate_grid.unsqueeze(0).unsqueeze(0)
-
-    #     h, w = plate_grid.shape
-
-    #     grid_y, grid_x = torch.meshgrid(
-    #         torch.linspace(-1, 1, h, device=plate_grid.device),
-    #         torch.linspace(-1, 1, w, device=plate_grid.device),
-    #         indexing="ij",
-    #     )
-
-    #     coords = torch.stack([grid_x, grid_y], dim=-1)
-
-    #     coords_flat = coords.reshape(-1, 2)
-
-    #     rotated_flat = coords_flat @ rotation_matrix.T
-
-    #     rotated_coords = rotated_flat.reshape(1, h, w, 2)
-
-    #     rotated_grid = F.grid_sample(
-    #         grid,
-    #         rotated_coords,
-    #         mode="bilinear",
-    #         padding_mode="zeros",
-    #         align_corners=True,
-    #     )
-
-    #     return rotated_grid.squeeze(0).squeeze(0)
     
-    def _draw_plate_cv2(self, start_pos, end_pos, angle, grid, config):
+    def _draw_plate(self, start_pos, end_pos, angle, config, binary=False):
         plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
-        plate_dim_x *= TO_PXL
-        plate_dim_y *= TO_PXL
-        grid_np = grid.numpy()
+        plate_dim_x *= self.to_pxl
+        plate_dim_y *= self.to_pxl
 
-        def draw_box_points(grid, center, box_dim, angle, density=1):
-            rotated_rect = (
-                (int(center[0]), int(center[1])),
-                (int(box_dim[0]), int(box_dim[1])), 
-                int(angle * 180 / math.pi)
+        if not binary:
+            occ1 = self._rectangle_occupancy(
+                start_pos,
+                angle,
+                plate_dim_x,
+                plate_dim_y
             )
+            occ2 = self._rectangle_occupancy(
+                end_pos,
+                angle,
+                plate_dim_x,
+                plate_dim_y
+            )
+            self._input_grid[1] = 1 - (1 - occ1*0.5) * (1 - occ2)
+        else:
+            grid_np = self._input_grid[1].numpy()
+            def draw_box_points(grid, center, box_dim, angle, density=1):
+                rotated_rect = (
+                    (int(center[0]), int(center[1])),
+                    (int(box_dim[0]), int(box_dim[1])), 
+                    int(angle * 180 / math.pi)
+                )
+                
+                box = cv2.boxPoints(rotated_rect)
+                box = np.int32(box)
+                cv2.fillPoly(grid, [box], density)
             
-            box = cv2.boxPoints(rotated_rect)
-            box = np.int32(box)
-            cv2.fillPoly(grid, [box], density)
+            # Draw start position
+            draw_box_points(
+                grid_np,
+                start_pos[:2],
+                (plate_dim_x, plate_dim_y),
+                angle,
+                0.5
+            )
 
-        # Draw start position
-        draw_box_points(
-            grid_np,
-            start_pos[:2],
-            (plate_dim_x, plate_dim_y),
-            angle,
-            0.5
-        )
+            # Draw end position
+            draw_box_points(
+                grid_np,
+                end_pos[:2],
+                (plate_dim_x, plate_dim_y),
+                angle,
+                1
+            )
 
-        # Draw end position
-        draw_box_points(
-            grid_np,
-            end_pos[:2],
-            (plate_dim_x, plate_dim_y),
-            angle,
-            1
-        )
+    def _rectangle_occupancy(self, pos, theta, rect_w, rect_h, sigma=None):
+        """
+        Creates a soft occupancy grid for a rotated rectangle.
+        Coordinates and dimensions are in pixels.
+        """
+        if sigma is None:
+            sigma = max(0.5, 1.5 * self.resolution_scale)
+        _, H, W = self._input_grid.shape
+        cx, cy = pos[:2]
+        ys = torch.linspace(0, H - 1, H)
+        xs = torch.linspace(0, W - 1, W)
+        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
 
-        # THIS VIZ FEELS LESS ACCURATE
-        # if isinstance(angle, torch.Tensor):
-        #     angle_rad = float(angle.item())
-        # else:
-        #     angle_rad = float(angle)
-        # half_w = plate_dim_x * TO_PXL * 0.5
-        # half_h = plate_dim_y * TO_PXL * 0.5
-        # corners = np.array(
-        #     [
-        #         [-half_w, -half_h],
-        #         [half_w, -half_h],
-        #         [half_w, half_h],
-        #         [-half_w, half_h],
-        #     ],
-        #     dtype=np.float32,
-        # )
-        # if abs(angle_rad) > 1e-6:
-        #     rotation = np.array(
-        #         [
-        #             [math.cos(angle), -math.sin(angle)],
-        #             [math.sin(angle), math.cos(angle)],
-        #         ],
-        #         dtype=np.float32,
-        #     )
-        #     corners = corners @ rotation.T
-        # pts = np.round(corners + np.array(start_pos[:2], dtype=np.float32)).astype(np.int32)
-        # cv2.fillPoly(grid_np, [pts], color=0.5)
-        # pts = np.round(corners + np.array(end_pos[:2], dtype=np.float32)).astype(np.int32)
-        # cv2.fillPoly(grid_np, [pts], color=1)
+        x = xx - cx
+        y = yy - cy
+
+        c = torch.cos(theta)
+        s = torch.sin(theta)
+        xr = c * x + s * y
+        yr = -s * x + c * y
+
+        hx = rect_w / 2.0
+        hy = rect_h / 2.0
+        qx = torch.abs(xr) - hx
+        qy = torch.abs(yr) - hy
+        dx = torch.clamp(qx, min=0.0)
+        dy = torch.clamp(qy, min=0.0)
+        outside_dist = torch.sqrt(dx**2 + dy**2 + 1e-8)
+        inside_dist = torch.clamp(torch.maximum(qx, qy), max=0.0)
+        sdf = outside_dist + inside_dist
+        return torch.sigmoid(-sdf / sigma)
+
+    def _swept_plate_occupancy(self, start_pos, end_pos, angle, config):
+        """
+        Soft occupancy of the continuous tool sweep volume.
+
+        The tool orientation is fixed during the sweep, so this accumulates
+        rectangle occupancies along the straight-line path between start and end.
+        """
+        plate_dim_x, plate_dim_y, _ = self._get_plate_dims(config)
+        plate_dim_x *= self.to_pxl
+        plate_dim_y *= self.to_pxl
+        distance = torch.norm(end_pos[:2] - start_pos[:2]).item()
+        n_steps = max(2, int(math.ceil(distance)) + 1)
+        mask = torch.zeros_like(self._output_grid)
+        for alpha in torch.linspace(0.0, 1.0, n_steps):
+            pos = start_pos + alpha * (end_pos - start_pos)
+            mask = torch.maximum(
+                mask,
+                self._rectangle_occupancy(pos, angle, plate_dim_x, plate_dim_y),
+            )
+        return mask
         
     def plot_grid(self, grid: torch.Tensor, title: str = "", ontop: bool = False) -> None:
         """Visualize the grid as an image"""
@@ -414,44 +451,96 @@ class PileSweepData(Dataset):
         plt.title(title)
         plt.show()
 
-    def plot_input_and_output(self, input_grid: torch.Tensor, label_grid: torch.Tensor, title: str = "") -> None:
+    def plot_input_and_output(
+            self,
+            input_grid: torch.Tensor,
+            label_grid: torch.Tensor,
+            title: str = "",
+            save_path: str | Path | None = None,
+        ) -> Path:
 
         from matplotlib import pyplot as plt
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        if save_path is None:
+            filename = "input_output_plot.png"
+            if title:
+                safe_title = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in title.strip())
+                filename = f"{safe_title or 'input_output_plot'}.png"
+            save_path = Path(__file__).with_name(filename)
+        else:
+            save_path = Path(save_path)
 
-        axes[0].imshow(
+        channel_names = ["Current occupancy", "Action projection"]
+        if input_grid.shape[0] > 2:
+            channel_names.append("Sweep-removed occupancy")
+        channel_names.extend(
+            f"Input channel {idx}"
+            for idx in range(len(channel_names), input_grid.shape[0])
+        )
+
+        n_cols = input_grid.shape[0] + 2
+        fig, axes = plt.subplots(1, n_cols, figsize=(4 * n_cols, 4))
+        if n_cols == 1:
+            axes = [axes]
+        if title:
+            fig.suptitle(title)
+
+        for idx, name in enumerate(channel_names):
+            axes[idx].imshow(
+                input_grid[idx],
+                cmap="gray",
+                origin="lower",
+                vmin=0,
+                vmax=1,
+            )
+            axes[idx].set_title(name)
+            axes[idx].set_xticks([])
+            axes[idx].set_yticks([])
+
+        axes[-2].imshow(
             input_grid[0],
             cmap="Reds",
             alpha=0.5,
             origin="lower",
             vmin=0,
-            vmax=1
+            vmax=1,
         )
-        # Overlay second occupancy grid
-        axes[1].imshow(
-            input_grid[1],
-            cmap="Reds",
-            alpha=0.8,
-            origin="lower",
-            vmin=0,
-            vmax=1
-        )
-        # Plot first occupancy grid
-        axes[1].imshow(
+        axes[-2].imshow(
             label_grid,
             cmap="Blues",
             alpha=0.5,
             origin="lower",
             vmin=0,
-            vmax=1
+            vmax=1,
         )
+        axes[-2].set_title("Current + target")
+        axes[-2].set_xticks([])
+        axes[-2].set_yticks([])
 
-        # Adjust layout
+        axes[-1].imshow(
+            input_grid[1],
+            cmap="Reds",
+            alpha=0.8,
+            origin="lower",
+            vmin=0,
+            vmax=1,
+        )
+        axes[-1].imshow(
+            label_grid,
+            cmap="Blues",
+            alpha=0.5,
+            origin="lower",
+            vmin=0,
+            vmax=1,
+        )
+        axes[-1].set_title("Action + target")
+        axes[-1].set_xticks([])
+        axes[-1].set_yticks([])
+
         plt.tight_layout()
-
-        # Show window
-        plt.show()
+        fig.savefig(save_path, dpi=150)
+        plt.close(fig)
+        return save_path
 
     def _clear_grids(self):
         self._input_grid.zero_()
@@ -497,9 +586,9 @@ class PileSweepData(Dataset):
             target[mask] = float(drawing)
 
     def _det_physics(self, config):
-        self._physics[0] = config["material"]["friction"]
-        self._physics[1] = config["material"]["density"]
-        self._physics[2] = config["box"]["friction"]
+        self._physics[0] = (config["material"]["friction"] - 0.05) / (0.5  - 0.05)
+        self._physics[1] = (config["material"]["density"]  -  750) / (5000 -  750)
+        self._physics[2] = (config["box"]["friction"]      - 0.05) / (0.5  - 0.05)
         # self._physics[3] = config["plate"]["speed"]
 
     def __getitem__(self, idx: int):
@@ -516,44 +605,23 @@ class PileSweepData(Dataset):
 
         self._draw_particle_grid(particles, self._input_grid[0], config)
         self._draw_particle_grid(particles_, self._output_grid, config)
-        self._draw_plate_cv2(plate_pos, plate_pos_, angle, self._input_grid[1], config)
+        self._draw_plate(plate_pos, plate_pos_, angle, config)
+        if self.include_sweep_removed:
+            sweep_mask = (self._swept_plate_occupancy(plate_pos, plate_pos_, angle, config) >= 0.5).to(torch.float32)
+            self._input_grid[2] = self._input_grid[0] * (1.0 - sweep_mask)
         self._det_physics(config)
-
-        # if dataset includes plates of different sizes
-        # x_dim_plt, y_dim_plt, _ = self._get_plate_dims(config)
-        # if (x_dim_plt != self._plt_dim_in_m[0] or y_dim_plt != self._plt_dim_in_m[1]):
-        #     self._precompute_plate_grid(x_dim_plt, y_dim_plt)
-        #     self._plate_cache.clear()
-
-        # rotated_plate = self._rotate_plate_torch(self._base_plate_grid, angle)
-
-        # self._color_grid(
-        #     grid=self._input_grid[1],
-        #     x=float(plate_pos[0]),
-        #     y=float(plate_pos[1]),
-        #     size=self._base_plate_grid.shape,
-        #     drawing=(rotated_plate > 0.5).float() * 0.5,
-        # )
-        # self._color_grid(
-        #     grid=self._input_grid[1],
-        #     x=float(plate_pos_[0]),
-        #     y=float(plate_pos_[1]),
-        #     size=self._base_plate_grid.shape,
-        #     drawing=(rotated_plate > 0.5).float(),
-        # )
 
         return (self._input_grid.clone(), self._physics.clone()), self._output_grid.clone()
 
-
 def main():
-    dataset = PileSweepData("corl/sphere/")
+    dataset = PileSweepData("corl/cube/n40", include_sweep_removed=True)
 
-    for i in range(len(dataset)):
-        inputs, label = dataset[i]
-        input, physics = inputs
-        dataset.plot_input_and_output(input, label, title=f"particles and plate {i}")
-        from matplotlib import pyplot as plt
-        plt.show()
+    for i in range(10):
+        inputs, label = dataset[i+10]
+        input_, physics = inputs
+        
+        dataset.plot_input_and_output(input_, label, title=f"particles and plate {i}")
+        
         
         
 

@@ -1,0 +1,135 @@
+# simple_mpc/config/experiments/compare_models_fast.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+# Fast-run variant of compare_models.yaml.
+# Same 6 models, reduced simulation budget for quick sanity-checks / CI.
+#
+# Speed-ups applied (all now wired to the Genesis sim):
+#   settle_steps      30  (default 100) — fewer post-action physics steps
+#   reset_warmup_steps 60 (default 150) — fewer post-shuffle settle steps
+#   pos_ctrl_steps    30  (default  60) — faster plate lower/lift
+#   mpc.n_sample     256  (default 1024) — fewer CEM trajectory samples
+#   mpc.n_mpc         10  (default   20) — fewer MPC optimisation steps
+#
+# NOT overridden (no effect in Genesis):
+#   render_width / render_height — fixed at GenesisEnv build time; cannot be
+#     changed per-experiment.  Edit config_simple.yaml and restart to change.
+#   action_step_size, fast_mode, render_step_before_capture — legacy no-ops.
+#
+# Usage:
+#   python run_experiments.py \
+#       simple_mpc/config/experiments/compare_models_fast.yaml
+#   python run_experiments.py \
+#       simple_mpc/config/experiments/compare_models_fast.yaml --dry-run
+# ──────────────────────────────────────────────────────────────────────────────
+
+base_config: simple_mpc/config/config_simple.yaml
+
+
+# ── output settings ───────────────────────────────────────────────────────────
+output:
+  root_dir:          outputs/experiments
+  experiment_name:   compare_models_fast
+
+  save_rewards:          true
+  save_actions:          true
+  save_per_episode_npz:  true
+  save_reward_plot:      true
+  save_raw_obs:          false   # skip large per-step observation arrays
+  save_states:           false
+
+  save_prediction_videos:  false  # skip — slow to generate
+  prediction_video_fps:    0.5
+
+  benchmark_throughput:  false
+  success_threshold:     0.0
+
+
+# ── shared episode settings ───────────────────────────────────────────────────
+episodes:
+  n_episodes:       1
+  random_seed_base: 42
+
+
+# ── shared fast overrides (applied to every experiment below) ─────────────────
+# YAML anchors let us write the fast block once and merge it into each entry.
+x-fast: &fast
+  dataset.settle_steps:       30    # post-action settle (default 100)
+  dataset.reset_warmup_steps: 60    # post-shuffle settle (default 150)
+  dataset.pos_ctrl_steps:     30    # plate lower/lift steps (default 60)
+  mpc.n_sample:              256    # CEM trajectory count (default 512)
+  mpc.n_mpc:                  10    # CEM optimisation iterations (default 20)
+
+
+# ── experiments ───────────────────────────────────────────────────────────────
+experiments:
+
+  # ── 1. Heuristic spread — 64×64 ─────────────────────────────────────────────
+  # - name:        heuristic_spread_64
+  #   description: "Eulerian heuristic spread, 64×64 occupancy grid — fast run"
+  #   model:
+  #     type:           eulerian
+  #     need_weights:   false
+  #     heuristic_type: spread
+  #     grid_n:         64
+  #   overrides:
+  #     <<: *fast
+
+  # ── 6. UNet shallow — 32×32 ─────────────────────────────────────────────────
+  - name:        unet_shallow_32
+    description: "UNetFiLM shallow variant, 32×32 inference grid — fast run"
+    model:
+      type:         unetfilm-shallow
+      weights_path: runs_cubes/nfu_mse_mass2_shallowlowres/unet_best.pth
+      grid_n:       32
+      physics_dim:  3
+    overrides:
+      <<: *fast
+
+  # ── 1. UNet deep — 128×128 ──────────────────────────────────────────────────
+  - name:        unet_deep_64
+    description: "UNetFiLM deep variant, 64×64 inference grid — fast run"
+    model:
+      type:         unetfilm
+      weights_path: runs_cubes/nfu_mse_mass2/unet_best.pth
+      grid_n:       64
+      physics_dim:  3
+    overrides:
+      <<: *fast
+
+  # ── 2. Heuristic spread — 32×32 ─────────────────────────────────────────────
+  - name:        heuristic_spread_32
+    description: "Eulerian heuristic spread, 32×32 occupancy grid — fast run"
+    model:
+      type:           eulerian
+      need_weights:   false
+      heuristic_type: spread
+      grid_n:         32
+    overrides:
+      <<: *fast
+
+
+
+  # ── 4. UNet deep — 32×32 ────────────────────────────────────────────────────
+  # - name:        unet_deep_32
+  #   description: "UNetFiLM deep variant, 32×32 inference grid — fast run"
+  #   model:
+  #     type:         unetfilm
+  #     weights_path: runs_cubes/nfu_mse_mass2_lowres/unet_best.pth
+  #     grid_n:       32
+  #     physics_dim:  3
+  #   overrides:
+  #     <<: *fast
+
+  # # ── 5. UNet shallow — 128×128 ───────────────────────────────────────────────
+  # - name:        unet_shallow_128
+  #   description: "UNetFiLM shallow variant, 128×128 inference grid — fast run"
+  #   model:
+  #     type:         unetfilm
+  #     weights_path: runs_cubes/nfu_mse_mass2_shallow/unet_best.pth
+  #     grid_n:       128
+  #     physics_dim:  3
+  #   overrides:
+  #     <<: *fast
+
+
+

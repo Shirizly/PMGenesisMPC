@@ -89,7 +89,7 @@ H = W = int(box.vol[0] * 1000)   # e.g. 0.128 m → 128 px
 
 | Variable | Shape | Values | Notes |
 |---|---|---|---|
-| `inputs` | `(B, 2, H, W)` | [0, 1] | Ch 0: soft particle occupancy before action; Ch 1: tool trajectory map |
+| `inputs` | `(B, 2, H, W)` | {0, 1} | Ch 0: **binary** particle occupancy before action (hard cv2 fill); Ch 1: tool trajectory map |
 | `physics` | `(B, 3)` | raw floats | `[material.friction, material.density, box.friction]` |
 | `outputs` | `(B, H, W)` | {0, 1} | Binary occupancy label after action (rendered by cv2, hard-filled) |
 | `logits` | `(B, H, W)` | ℝ | `model(inputs, physics).squeeze(1)` — **raw output, NOT a probability** |
@@ -209,7 +209,7 @@ _{id}_data.pt  +  _{id}_config.yaml
       │
       ▼  PileSweepData.__getitem__
       │  • convert positions m→px
-      │  • render particles with cv2 → Channel 0 (H×W) — soft occ in [0,1]
+      │  • render particles with cv2 → Channel 0 (H×W) — binary occ {0,1} (hard cv2 fill)
       │  • render tool path with cv2 → Channel 1 (H×W) — intensities 0.5/1.0
       │  • extract physics vector (len 3)
       ▼
@@ -427,7 +427,7 @@ upward** — the opposite of a camera image.
 The plate occupies a rotated rectangle.  The `(width, height)` passed to
 `cv2.boxPoints` is `(plate_dim_x, plate_dim_y)` in pixels:
 
-| angle\_sim | plate\_dim\_x (long, 100 px) | plate\_dim\_y (short, 5 px) |
+| angle\_sim | plate\_dim\_x (long, 40 px) | plate\_dim\_y (short, 2 px) |
 |-----------|------------------------------|------------------------------|
 | 0         | along world-x (cols)         | along world-y (rows)         |
 | π/2       | along world-y (rows)         | along world-x (cols)         |
@@ -553,3 +553,273 @@ Both use a plate rectangle drawn at (start, end) with intensities (0.5, 1.0).
 
 Both produce the same physical rectangle (plate perpendicular to travel).
 The `+π/2` offset and the dim-swap from `transpose(-2,-1)` cancel exactly.
+
+---
+
+## 12. `EulerianModelWrapper` (`model/eulerian_wrapper.py`)
+
+### Constructor
+
+```python
+EulerianModelWrapper(
+    user_model,          # nn.Module — any model with forward(occ, start_grid, end_grid)
+    grid_bounds,         # dict with x_min/x_max/y_min/y_max/z_min/z_max (normalised)
+    grid_res,            # (Nx, Ny) — e.g. (128, 128)
+    cam_extrinsic,       # (4,4) view matrix from env.get_cam_extrinsics() — ignored for 'genesis'
+    global_scale,        # float — config['dataset']['global_scale']
+    splat_sigma=0.0,     # 0 = hard voxel, >0 = Gaussian splat (differentiable but slower)
+    occ_threshold=0.5,   # binarisation threshold for occ→particles back-conversion
+    action_convention,   # 'flex' (PyFleX) or 'genesis' (overhead z-up camera)
+)
+```
+
+### `default_bounds()` — heuristic models (1.2× expansion)
+
+```python
+EulerianModelWrapper.default_bounds(config, convention='genesis')
+# → {x_min: -w_n*1.2, x_max: w_n*1.2, y_min: -w_n*1.2, y_max: w_n*1.2,
+#    z_min: 0.45, z_max: 0.55}   (for genesis, z_table=0.5, z_margin=0.05)
+```
+
+`UNetFiLMPushModel.default_bounds(config)` uses **exact** ±w_n (no 1.2×) to align
+the 1 px/mm grid with the training dataset.
+
+### `predict_one_step_occ(occ_cur, action)`
+
+```
+action (B,4) [sx,sy,ex,ey] world metres
+  │  _action_to_cam_3d_genesis(action, global_scale)
+  ▼
+s_3d_cam, e_3d_cam  (B,3)  [cam_x, cam_y, z_norm]
+  │  _cam3d_to_grid(pts)
+  ▼
+start_grid, end_grid  (B,3)  [ix_cam_x, iy_cam_y, iz]  grid indices in [0,N-1]
+  │  user_model.forward(occ_cur, start_grid, end_grid)
+  ▼
+occ_pred  (B, Nx, Ny)  same convention as occ_cur
+```
+
+### `_cam3d_to_grid(pts_3d)` (line ≈ 658)
+
+Maps `(B,3)` normalised cam coords to `(B,3)` fractional grid indices:
+```
+ix = (cam_x − x_min) / (x_max − x_min) * (Nx − 1)
+iy = (cam_y − y_min) / (y_max − y_min) * (Ny − 1)
+```
+For 2-D grids (`_get_axes(2)` returns `('x','y')`): uses cam_x and cam_y only.
+
+### `initial_occ_from_particles(s_cur)` (line ≈ 490)
+
+```python
+s_cur: (B, N, 3)  particles in normalised cam coords
+→ occ:  (B, Nx, Ny)  float32 occupancy in [0,1], detached (no grad)
+```
+Calls `_particles_to_occupancy` with `sigma=splat_sigma` (default 0 → hard voxel).
+
+### `_get_axes(ndim)` / axis convention
+
+| `ndim` | Axes | Grid dim 0 | Grid dim 1 |
+|--------|------|-----------|-----------|
+| 2 | `('x','y')` | cam_x = world_x | cam_y = −world_y |
+| 3 | `('x','y','z')` | cam_x | cam_y | cam_z |
+
+---
+
+## 13. `UNetFiLMPushModel` (`model/eulerian_wrapper.py`, line ≈ 1098)
+
+### Role
+
+Wraps a trained `NFDUNetFiLM` as a `user_model` plug-in for `EulerianModelWrapper`.
+Bridges from EulerianWrapper grid convention (dim0=world_x, dim1=−world_y) to the
+dataset convention (dim0=world_y, dim1=world_x) expected by the model.
+
+### Constructor
+
+```python
+UNetFiLMPushModel(
+    unet_film,           # trained NFDUNetFiLM instance
+    physics,             # Tensor(3,): [particle_friction, density, box_friction]
+    grid_size,           # (Nx, Ny) — must match training resolution
+    plate_length_px=40.0,
+    plate_width_px=2.0,
+    sigma=1.5,           # soft-mask pixel smoothness
+)
+```
+
+### `forward(occ, action_start, action_end)` — full pipeline
+
+```
+occ: (B, Nx, Ny) EulerianWrapper — dim0=world_x, dim1=−world_y
+  │ flip(dim1) + transpose(-2,-1)
+  ▼
+occ_ds: (B, Ny, Nx) dataset — dim0=world_y, dim1=world_x
+  │
+  │  action_start/end: (B,3) [ix_cam_x, iy_cam_y, iz]
+  │  iy_ds = (Ny−1) − iy_cam   (flips cam_y → world_y index)
+  │  angle  = atan2(iy_e_ds − iy_s_ds,  ix_e − ix_s)  [travel direction, no +π/2]
+  │  center = (iy_ds, ix_cam)  [dim0=world_y, dim1=world_x]
+  │  _draw_plate_soft(center, angle, intensity)
+  ▼
+act_ch: (B, Nx, Ny) soft plate in dataset convention
+  │
+  │  x = stack([occ_ds, act_ch], dim=1)  — (B, 2, Nx, Ny)
+  │  phys = self._physics.expand(B, -1)  — (B, 3)
+  │  unet_film(x, phys) → raw logit (B, 1, Nx, Ny)
+  │  .squeeze(1) → (B, Nx, Ny)
+  │  + residual (input channel 0 = occ_ds) already applied inside NFDUNetFiLM
+  ▼
+occ_pred_ds: (B, Nx, Ny) raw logit
+  │ sigmoid  →  (B, Nx, Ny) occupancy ∈ (0,1)
+  │ transpose(-2,-1) + flip(dim1)           [inverse of opening transform]
+  ▼
+return: (B, Nx, Ny) EulerianWrapper convention, values in (0,1)
+```
+
+**Why sigmoid here?**  `NFDUNetFiLM` is trained with `MSE(sigmoid(logit), target)`.
+Raw logits ±3–5 are outside `clamp(0,1)` → zero MPC gradient.  Sigmoid maps to
+(0.007, 0.993) → `clamp` is identity → gradient flows. See §11.
+
+### `default_bounds(config)` (no 1.2× expansion)
+
+```python
+# w_n = wkspc_w / global_scale = 0.064 / 0.6 ≈ 0.1067
+{x_min: -w_n, x_max: w_n, y_min: -w_n, y_max: w_n,
+ z_min: 0.45, z_max: 0.55}
+```
+
+Grid exactly covers the physical workspace box: 1 grid cell = 1 mm.
+
+### `_draw_plate_soft` angle convention
+
+`angle = atan2(Δworld_y, Δworld_x)` = direction of travel.
+At `angle=0` (travel along world_x): plate long-axis is along `dim 0` = world_y
+(i.e. plate is perpendicular to travel) — matches training data.
+The physical simulator angle `angle_sim = angle + π/2`.
+
+---
+
+## 14. `GenesisEnv` (`env/genesis_env.py`)
+
+### Camera
+
+```python
+# camera at (0, 0, cam_h=0.3 m), lookat=(0,0,0), up=(0,1,0)
+# render() → obs (H, W, 5): [R, G, B, is_material, depth_raw]
+#   material pixels:   obs[..., 4] = cam_h
+#   background pixels: obs[..., 4] = 2 * cam_h
+# global_scale = 2 * cam_h  → depth_norm = obs[...,4] / global_scale
+#   material: depth_norm = 0.5       ← foreground threshold < 0.599/0.8 ≈ 0.749
+#   background: depth_norm = 1.0
+get_cam_params() → [fx, fy, cx, cy]   # intrinsics only; no extrinsic needed
+```
+
+### `step(action)` — action convention
+
+```python
+# action = [sx, sy, ex, ey]  world metres (x,y only; z is plate height)
+angle = atan2(ey - sy, ex - sx) + π/2   # plate yaw = perpendicular to travel
+```
+
+`_action_to_cam_3d_genesis(action, global_scale)`:
+```python
+s = [sx/gs, -sy/gs, 0.5]   # cam_x = world_x/gs, cam_y = -world_y/gs
+e = [ex/gs, -ey/gs, 0.5]
+```
+
+### Foreground detection
+
+`_FG_DEPTH_THRESHOLD = 0.599 / 0.8 ≈ 0.749` (defined in both `mpc.py` and `adapters.py`).
+Material pixels normalised to 0.5 → well below threshold → correctly flagged as foreground.
+
+---
+
+## 15. MPC Inference Data Flow
+
+```
+env.render()  →  obs (H,W,5)
+    │
+    │  depth = obs[...,4] / global_scale
+    │  pts   = depth2fgpcd(depth, depth < _FG_DEPTH_THRESHOLD, cam_params)
+    │          → (N, 3)  [cam_x, cam_y, 0.5] = [world_x/gs, -world_y/gs, 0.5]
+    │  pts_t = pts.unsqueeze(0)  →  (1, N, 3)
+    │  EulerianModelWrapper.initial_occ_from_particles(pts_t)
+    │          → _particles_to_occupancy(pts_t, bounds, grid_res, sigma=0)
+    ▼
+occ_cur  (1, Nx, Ny)  [dim0=world_x, dim1=−world_y]  binary {0,1}
+    │
+    │  EulerianAdapter.expand_state(occ_cur, n_sample)
+    ▼
+occ_batch  (n_sample, Nx, Ny)                          ← cloned, grad-ready
+    │
+    │  Adam optimizer on action_seqs (n_sample, n_look_ahead, 4)
+    │  for each iter:
+    │    predict_one_step_occ(occ_batch, act_batch)
+    │      → UNetFiLMPushModel.forward()              (see §13)
+    ▼
+occ_pred  (n_sample, Nx, Ny)  values in (0,1)           ← sigmoid applied
+    │
+    │  reward = (occ_pred.clamp(0,1) * score_tensor).sum(dim=[1,2])
+    │  loss   = -reward.mean()
+    │  loss.backward(); optimizer.step()
+    ▼
+best action  →  env.step(action)
+```
+
+**Key numbers (128×128 grid, default config):**
+- `global_scale = 0.6 m`, `wkspc_w = 0.064 m`, `w_n = 0.1067`
+- Grid: 128×128 px, 1 px = 1 mm (workspace 128 mm × 128 mm)
+- `cam_h = 0.3 m`, `fx = fy ≈ 360 / tan(22.5°) ≈ 869`
+- Particle footprint in grid: ≈ 9 px diameter for a 9 mm cube
+
+---
+
+## 16. Physics Parameter Reference
+
+### Training data values (from `Genesis/data/corl/cube/`)
+
+All training configs in `corl/cube/` use **fixed** physics (no variation across runs):
+
+| Physics param | Dataset key | Raw training value | Unit |
+|---|---|---|---|
+| particle friction | `material.friction` | 0.05 | — |
+| particle density | `material.density` | 750.0 | kg/m³ |
+| box friction | `box.friction` | 0.05 | — |
+
+### Physics normalisation (`PileSweepData._det_physics`)
+
+The dataset normalises raw physics to `[0, 1]` before returning them to the training loop:
+
+```python
+physics[0] = (friction     - 0.05) / (0.50 - 0.05)   # range: friction ∈ [0.05, 0.50]
+physics[1] = (density      -  750) / (5000 -  750)   # range: density  ∈ [750,  5000] kg/m³
+physics[2] = (box_friction - 0.05) / (0.50 - 0.05)   # range: friction ∈ [0.05, 0.50]
+```
+
+For the standard training values `[0.05, 750, 0.05]` the normalised vector is `[0, 0, 0]`.
+This same normalisation must be applied at inference so the FiLM generator receives
+inputs consistent with training.
+
+### MPC config physics (`simple_mpc/config/`)
+
+```yaml
+particle_friction: 0.05    # raw value — normalised inside load_model
+particle_density:  750.0   # raw value — normalised inside load_model
+box_friction:      0.05    # raw value — normalised inside load_model
+```
+
+### `load_model` physics vector (`run_experiments.py`)
+
+```python
+_f  = cfg['dataset'].get('particle_friction', 0.05)
+_d  = cfg['dataset'].get('particle_density',  750.0)
+_bf = cfg['dataset'].get('box_friction',       0.05)
+physics_vec = torch.tensor([
+    (_f  - 0.05) / (0.50 - 0.05),
+    (_d  -  750) / (5000 -  750),
+    (_bf - 0.05) / (0.50 - 0.05),
+], dtype=torch.float32)
+```
+Set `particle_friction`, `particle_density`, and `box_friction` in your experiment config
+under `dataset:` to match the actual simulation parameters; `load_model` normalises them.
+
+
