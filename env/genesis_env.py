@@ -132,6 +132,9 @@ class GenesisEnv:
                 'backend':          sim.get('backend', 'gpu'),
                 'precision':        str(sim.get('precision', '32')),
                 'performance_mode': bool(sim.get('performance_mode', True)),
+                # timing knobs — read by SandboxManipulation for settle/ctrl steps
+                'settle_steps':     int(ds.get('settle_steps',   100)),
+                'pos_ctrl_steps':   int(ds.get('pos_ctrl_steps', 100)),
             },
             'rigid_options': {
                 'iterations':         int(ds.get('rigid_iterations', 10)),
@@ -269,6 +272,7 @@ class GenesisEnv:
                                 device=gs.device)
 
         self._sim.execute_action(p_start, p_stop, angle_t)
+        self._sim._settle_steps = self.settle_steps   # honour per-experiment override
         self._sim.update_material_state()
         obs = self.render()
 
@@ -283,8 +287,13 @@ class GenesisEnv:
 
     def reset(self) -> None:
         """Shuffle particles to a new random configuration."""
+        # Use reset_warmup_steps for the post-shuffle settle (particles need
+        # time to fall under gravity from their newly placed positions).
+        self._sim._settle_steps = self.reset_warmup_steps
         self._sim.shuffle_particles()
         self._sim.update_material_state()
+        # Restore the per-step settle budget for subsequent step() calls.
+        self._sim._settle_steps = self.settle_steps
         return None
 
     def set_active_particles(self, n: int) -> None:

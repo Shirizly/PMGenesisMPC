@@ -260,6 +260,126 @@ def differentiable_push_splat_batch(rho, p0, p1, width=5, sigma=1.0):
     return rho_new, swept
 
 
+def differentiable_push_splat_oriented_batch(rho, p0, p1, angles, width=5, sigma=1.0):
+    """
+    Batched oriented push: plate orientation is independent of travel direction.
+
+    Unlike ``differentiable_push_splat_batch`` (which implicitly sets the plate
+    perpendicular to travel), here the plate orientation is given explicitly via
+    ``angles``.  The swept region is a **parallelogram** — the Minkowski sum of
+    the plate face segment and the travel segment — rather than a rectangle.
+
+    Coordinate decomposition uses oblique (Cramer's-rule) coordinates so the
+    traversal position ``λ`` is the true along-face offset.  Swept particles
+    are deposited at ``p1 + λ · t̂_plate``, preserving their plate-face position.
+
+    Degenerate case: if the plate moves parallel to its own face (det → 0), no
+    new strip is swept and the swept mask is forced to zero (identity push).
+
+    Args:
+        rho:    (B, H, W) torch float tensor – batch of occupancy fields.
+        p0:     (B, 2)    torch tensor [x, y] – per-sample tool start.
+        p1:     (B, 2)    torch tensor [x, y] – per-sample tool end.
+        angles: (B,)      torch tensor – plate orientation in radians.
+                          ``t_plate = (cos(angle), sin(angle))`` is the
+                          direction of the plate's long face in image convention
+                          (x = col, y = row).
+        width:  half-length of the plate face in grid pixels.
+        sigma:  softness of swept-region boundaries in grid pixels (same units
+                as ``differentiable_push_splat_batch``).
+
+    Returns:
+        rho_new: (B, H, W) updated occupancy fields.
+        swept:   (B, H, W) soft swept masks.
+    """
+    B, H, W = rho.shape
+    device = rho.device
+    dtype  = rho.dtype
+
+    # Plate face unit vector
+    t_x = torch.cos(angles)                            # (B,)
+    t_y = torch.sin(angles)                            # (B,)
+    d   = p1 - p0                                      # (B, 2)
+
+    # 2D scalar cross product  det = d × t = d_x·t_y − d_y·t_x
+    # Geometrically: |det| = |d| · |sin φ| = travel projected onto plate normal.
+    # When det → 0 the plate slides along its own face: nothing new is swept.
+    det      = d[:, 0] * t_y - d[:, 1] * t_x          # (B,)
+    zero_det = det.abs() < 1e-6                         # (B,) degenerate pushes
+    det_safe = det.sign() * det.abs().clamp(min=1e-6)  # keep sign, avoid /0
+
+    # Shared pixel grid — built once, broadcast over B
+    y_g, x_g = torch.meshgrid(
+        torch.arange(H, device=device, dtype=dtype),
+        torch.arange(W, device=device, dtype=dtype),
+        indexing='ij')
+    px = torch.stack([x_g, y_g], dim=-1)               # (H, W, 2)
+
+    # rel[b, h, w] = pixel (h,w) position relative to p0[b]  —  (B, H, W, 2)
+    rel = px.unsqueeze(0) - p0.view(B, 1, 1, 2)
+
+    # Oblique coordinates via 2D Cramer's rule
+    #   α = (rel × t) / det  — travel progress, ∈ [0, 1] when swept
+    #   λ = (d × rel) / det  — along-face offset, ∈ [-width, width] when swept
+    rel_cross_t = rel[..., 0] * t_y.view(B, 1, 1) - rel[..., 1] * t_x.view(B, 1, 1)  # (B,H,W)
+    d_cross_rel = d[:, 0].view(B, 1, 1) * rel[..., 1] - d[:, 1].view(B, 1, 1) * rel[..., 0]  # (B,H,W)
+
+    alpha = rel_cross_t / det_safe.view(B, 1, 1)        # (B, H, W)
+    lam   = d_cross_rel / det_safe.view(B, 1, 1)        # (B, H, W)
+
+    # Convert α to pixel units so sigma has consistent meaning across all gates:
+    #   alpha_px = α · L_normal  where L_normal = |det| = travel along plate normal.
+    L_normal  = det_safe.abs()                           # (B,)
+    alpha_px  = alpha * L_normal.view(B, 1, 1)          # (B, H, W), in pixels
+
+    swept = (torch.sigmoid( alpha_px / sigma)
+           * torch.sigmoid((L_normal.view(B, 1, 1) - alpha_px) / sigma)
+           * torch.sigmoid((width - lam.abs()) / sigma))   # (B, H, W)
+
+    # Zero out degenerate pushes before any mass redistribution
+    if zero_det.any():
+        swept = swept * (~zero_det).view(B, 1, 1).to(dtype)
+
+    mass        = rho * swept
+    rho_cleared = rho * (1.0 - swept)
+
+    # Deposition: preserve along-face offset λ, deposit at p1
+    dest_x = p1[:, 0].view(B, 1, 1) + lam * t_x.view(B, 1, 1)
+    dest_y = p1[:, 1].view(B, 1, 1) + lam * t_y.view(B, 1, 1)
+
+    # Bilinear scatter — identical logic to differentiable_push_splat_batch
+    x0f = torch.floor(dest_x)
+    y0f = torch.floor(dest_y)
+    fx  = dest_x - x0f
+    fy  = dest_y - y0f
+
+    deposited = torch.zeros(B, H, W, device=device, dtype=dtype)
+    for dy_int in (0, 1):
+        for dx_int in (0, 1):
+            wx = fx       if dx_int else (1.0 - fx)
+            wy = fy       if dy_int else (1.0 - fy)
+            xi = (x0f + dx_int).long()
+            yi = (y0f + dy_int).long()
+            valid = (xi >= 0) & (xi < W) & (yi >= 0) & (yi < H)
+            w = wx * wy * mass * valid.to(dtype)
+            xi_c = xi.clamp(0, W - 1)
+            yi_c = yi.clamp(0, H - 1)
+            flat_idx = (yi_c * W + xi_c).view(B, H * W)
+            w_flat   = w.view(B, H * W)
+            part = torch.zeros(B, H * W, device=device, dtype=dtype)
+            part.scatter_add_(1, flat_idx, w_flat)
+            deposited = deposited + part.view(B, H, W)
+
+    rho_new = rho_cleared + deposited
+
+    # Restore identity for degenerate pushes
+    if zero_det.any():
+        rho_new = torch.where(zero_det.view(B, 1, 1), rho,                rho_new)
+        swept   = torch.where(zero_det.view(B, 1, 1), torch.zeros_like(swept), swept)
+
+    return rho_new, swept
+
+
 def differentiable_push_spread(rho, p0, p1, width=5, sigma=1.0):
     """
     Differentiable push with linear proportional spread (Approach B).

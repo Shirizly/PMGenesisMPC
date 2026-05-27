@@ -224,7 +224,8 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
             model = model.cuda()
 
     elif mtype == 'unetfilm':
-        from GranularDynamics2.myClasses.UNetModels_conditioned import UNetFiLM
+        # from GranularDynamics2.myClasses.UNetModels_conditioned import UNetFiLM
+        from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM as UNetFiLM
         from model.eulerian_wrapper import EulerianModelWrapper, UNetFiLMPushModel
 
         if env is None:
@@ -256,9 +257,9 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
 
         # Instantiate UNetFiLM
         physics_dim = model_spec.get('physics_dim', 3)
-        unet = UNetFiLM(in_channels=2, physics_dim=physics_dim, out_channels=1)
+        unet = UNetFiLM(in_channels=2, out_channels=1, cond_dim=physics_dim)
         print(f"    Loading UNetFiLM from {weights_path}")
-        unet.load_state_dict(torch.load(weights_path, map_location='cpu'))
+        unet.load_state_dict(torch.load(weights_path, map_location='cuda' if torch.cuda.is_available() else 'cpu'))
         unet.eval()
 
         push_model = UNetFiLMPushModel(
@@ -281,6 +282,66 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
 
         if hasattr(model, 'cuda'):
             model = model.cuda()
+
+    elif mtype == 'unetfilm-shallow':
+        # from GranularDynamics2.myClasses.UNetModels_conditioned import UNetFiLM
+        from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLMShallow as UNetFiLM
+        from model.eulerian_wrapper import EulerianModelWrapper, UNetFiLMPushModel
+
+        if env is None:
+            raise ValueError("UNetFiLM model requires env for cam_extrinsic")
+
+        weights_path = model_spec.get('weights_path', '')
+        if not weights_path:
+            raise ValueError("'weights_path' is required in model_spec for UNetFiLM")
+
+        # Physics parameters from dataset config
+        physics_vec = torch.tensor([
+            cfg['dataset'].get('particle_friction', 1.0),
+            cfg['dataset'].get('particle_density', 1000.0),
+            cfg['dataset'].get('box_friction', 0.5),
+        ], dtype=torch.float32)
+
+        # Grid resolution: default 1 px/mm, overridable via model_spec['grid_n']
+        box_full_m     = cfg['dataset']['wkspc_w'] * 2   # full box width in metres
+        default_grid_n = round(box_full_m * 1000)         # e.g. 128 for a 128 mm box
+        grid_n         = int(model_spec.get('grid_n', default_grid_n))
+        grid_res       = (grid_n, grid_n)
+
+        # Plate dimensions in grid pixels
+        plate_L_m  = cfg['dataset'].get('plate_length', 0.04)
+        plate_W_m  = cfg['dataset'].get('plate_width',  0.002)
+        px_per_m   = grid_n / box_full_m
+        plate_L_px = plate_L_m * px_per_m
+        plate_W_px = plate_W_m * px_per_m
+
+        # Instantiate UNetFiLM
+        physics_dim = model_spec.get('physics_dim', 3)
+        unet = UNetFiLM(in_channels=2, out_channels=1, cond_dim=physics_dim)
+        print(f"    Loading UNetFiLM from {weights_path}")
+        unet.load_state_dict(torch.load(weights_path, map_location='cuda' if torch.cuda.is_available() else 'cpu'))
+        unet.eval()
+
+        push_model = UNetFiLMPushModel(
+            unet_film=unet,
+            physics=physics_vec,
+            grid_size=grid_res,
+            plate_length_px=plate_L_px,
+            plate_width_px=plate_W_px,
+        )
+
+        bounds        = UNetFiLMPushModel.default_bounds(cfg)
+        cam_extrinsic = env.get_cam_extrinsics()
+        global_scale  = cfg['dataset']['global_scale']
+        model = EulerianModelWrapper(
+            push_model, bounds, grid_res, cam_extrinsic, global_scale,
+            action_convention='genesis',
+        )
+        print(f"    UNetFiLM ready: grid={grid_res}, "
+              f"plate={plate_L_px:.1f}×{plate_W_px:.1f}px, physics={physics_vec.tolist()}")
+
+        if hasattr(model, 'cuda'):
+            model = model.cuda() if torch.cuda.is_available() else model
 
     else:
         raise ValueError(
@@ -883,6 +944,17 @@ def _sync_env_config(env, cfg: dict) -> None:
     new_n = ds.get('num_objects', ds.get('n_particles', None))
     if new_n is not None:
         env.set_active_particles(int(new_n))
+
+    # ── timing knob sync ───────────────────────────────────────────────────────
+    # settle_steps / reset_warmup_steps are forwarded live by GenesisEnv.step()
+    # and reset() via env.settle_steps / env.reset_warmup_steps (already synced
+    # above).  pos_ctrl_steps controls lowering/lifting and must also be pushed
+    # to the sim's internal tensors immediately.
+    if 'pos_ctrl_steps' in ds:
+        n = int(ds['pos_ctrl_steps'])
+        env._sim._pos_ctrl_steps = n
+        env._sim._steps_0to1 = torch.linspace(
+            0, 1, n, device=env._sim._steps_0to1.device)
 
     # Keep env.config in sync so adapters and reset() read correct values.
     env.config = cfg

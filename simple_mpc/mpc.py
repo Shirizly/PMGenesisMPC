@@ -116,7 +116,7 @@ def run_simple_mpc(
     n_sample      = mpc_cfg['n_sample']
     n_update_iter = mpc_cfg['n_update_iter']
     gd_lr         = mpc_cfg['gd']['lr']
-    device        = 'cuda'
+    device        = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     debug_cfg          = mpc_cfg.get('debug', {})
     debug_enabled      = bool(debug_cfg.get('enabled', False))

@@ -55,8 +55,10 @@ class SandboxManipulation:
         # PARAMETERS FOR TRAINING
         self._wall_thickness = self._box_params.get('wall_thickness', 0.02)
         self._granular_vol = self._material_params.get('vol', [0.27, 0.27, 0.1])
-        
-        self._settle_steps = 100
+
+        # Configurable timing — read from simulation section so they can be
+        # tuned without rebuilding the scene.
+        self._settle_steps   = int(self._sim_params.get('settle_steps',   100))
         self._goal_threshold = 0.001
         
         self._debug = debug
@@ -88,10 +90,24 @@ class SandboxManipulation:
         lift_height = self._box_params["vol"][2]
         self._lift_height_tensor = torch.tensor([0, 0, lift_height], device=gs.device).expand(self._n_envs, -1)
         
-        # used to create path for position control
-        self._pos_ctrl_steps = 100
+        # used to create path for position control (lower/lift plate)
+        self._pos_ctrl_steps = int(self._sim_params.get('pos_ctrl_steps', 100))
         self._steps_0to1 = torch.linspace(0, 1, self._pos_ctrl_steps, device=gs.device)
-        
+
+        # Clearance height for teleport-assisted lower/lift.
+        # The plate is teleported to this height above the operating height
+        # before simulating only the short final descent (and the first short
+        # ascent before teleporting away).  2 × particle_size clears the top of
+        # even a two-layer pile; 8 mm is the minimum to avoid spawning inside
+        # a cube corner.
+        _ps  = particle_size if isinstance(particle_size, float) else max(particle_size)
+        _lift_h = self._box_params['vol'][2]          # full lift = box interior height
+        self._clearance_height     = max(0.008, 2.0 * _ps)
+        self._clearance_ctrl_steps = max(10, int(round(
+            self._pos_ctrl_steps * self._clearance_height / _lift_h)))
+        self._clearance_offset = torch.zeros((self._n_envs, 3), device=gs.device)
+        self._clearance_offset[:, 2] = self._clearance_height
+
         # helpers to fix all dofs except z during lowering and lifting
         self._vertical_dofs_local = [0, 1, 3, 4, 5] 
         self._vertical_dof_fix = torch.zeros((self._n_envs, 5), device=gs.device)
@@ -712,19 +728,22 @@ class SandboxManipulation:
 
         return reached_goal, final_pos
     
-    def plate_position_translation(self, p_start, p_end):
+    def plate_position_translation(self, p_start, p_end, n_steps: int | None = None):
         """
         Move plates with position control across all environments.
         
         Args:
             p_start: Starting positions [n_envs, 3] or [3]
             p_end: Ending positions [n_envs, 3] or [3]
-            n_steps: Number of steps for interpolation
-        """        
-        path = (1 - self._steps_0to1[:, None, None]) * p_start[None, :, :] + self._steps_0to1[:, None, None] * p_end[None, :, :]
-        
+            n_steps: Override step count (defaults to self._pos_ctrl_steps)
+        """
+        n = n_steps if n_steps is not None else self._pos_ctrl_steps
+        steps_0to1 = (self._steps_0to1 if n_steps is None
+                      else torch.linspace(0, 1, n, device=gs.device))
+        path = (1 - steps_0to1[:, None, None]) * p_start[None, :, :] + steps_0to1[:, None, None] * p_end[None, :, :]
+
         self.plate.set_pos(p_start)
-        for i in range(self._pos_ctrl_steps):
+        for i in range(n):
             self.plate.set_pos(pos=path[i])
             self.plate.set_dofs_position(
                 position=self._vertical_dof_fix,
@@ -790,29 +809,31 @@ class SandboxManipulation:
             Tensor of shape [n_envs] with success status
         """
 
-        # Lowering
+        # Lower: teleport to clearance height, then simulate only the short
+        # final descent into operating position.  This skips simulating the
+        # approach from the full lift height above.
         self._vertical_dof_fix[:, 0] = p_start[:, 0]
         self._vertical_dof_fix[:, 1] = p_start[:, 1]
         self._vertical_dof_fix[:, 4] = angle
-        self.plate_position_translation(
-            p_start + self._lift_height_tensor,
-            p_start,
-        )
-        
-        # Sweeping
+        lower_start = p_start + self._clearance_offset
+        self.plate.set_pos(lower_start, zero_velocity=True)
+        self.plate_position_translation(lower_start, p_start, self._clearance_ctrl_steps)
+
+        # Sweep
         reached_goal, final_pos = self.plate_velocity_translation(
             p_start,
             p_stop,
             angle,
         )
 
-        # Lifting
+        # Lift: simulate only the short ascent to clearance height, then
+        # teleport the plate out of the way.  Particles are already below
+        # clearance height so there is no contact after this point.
         self._vertical_dof_fix[:, 0] = final_pos[:, 0]
         self._vertical_dof_fix[:, 1] = final_pos[:, 1]
         self.plate_position_translation(
-            final_pos,
-            final_pos + self._lift_height_tensor,
-        )
+            final_pos, final_pos + self._clearance_offset, self._clearance_ctrl_steps)
+        self.plate.set_pos(final_pos + self._lift_height_tensor, zero_velocity=True)
 
         return reached_goal, final_pos
 

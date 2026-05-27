@@ -36,11 +36,19 @@ dataset:
   box_wall_thickness: 0.02   # box wall thickness (metres)
   # runtime flags
   headless: True
-  fast_mode: False                # if True: faster defaults for step size + settling
-  action_step_size: 0.02          # larger => fewer interpolation steps (faster)
-  settle_steps: 200               # fewer post-action settle steps => faster
-  reset_warmup_steps: 500         # fewer reset warmup steps => faster episode reset
-  render_step_before_capture: True  # disable for extra speed if physics already stepped
+  fast_mode: False                # no-op in Genesis (kept for legacy compat)
+  action_step_size: 0.02          # no-op in Genesis (sweep uses velocity control)
+  render_step_before_capture: True  # no-op in Genesis (kept for legacy compat)
+  # ── timing knobs (all three now wired to the Genesis sim) ─────────────────
+  # settle_steps   : physics steps held after each push action (post-action settle).
+  #                  Was hardcoded at 100 before; 100 maintains identical behaviour.
+  # reset_warmup_steps: physics steps after particle shuffle (reset settle).
+  #                  Was previously a no-op; 150 gives particles time to fall.
+  # pos_ctrl_steps : steps used to lower and lift the plate (position control).
+  #                  Was hardcoded at 100; 60 is fast enough for a 4 cm lift.
+  settle_steps: 100               # post-action settle (formerly hardcoded 100)
+  reset_warmup_steps: 150         # post-shuffle settle (was 500 but was a no-op)
+  pos_ctrl_steps: 60              # plate lower/lift steps (was hardcoded 100)
   # Pusher plate geometry — used by PhysicsAwareActionSampler and genesis_env.step
   plate_length: 0.04           # plate long-axis length (metres); matches Genesis config
   plate_width:  0.002          # plate short-axis width (metres)
@@ -67,7 +75,7 @@ mpc:
   n_mpc: 20           # number of real-world steps to execute
   n_look_ahead: 1    # planning horizon (steps rolled out in model space)
   n_sample: 512       # candidates per optimizer call (each randomly initialised)
-  n_update_iter: 120  # Adam iterations per MPC step
+  n_update_iter: 50  # Adam iterations per MPC step
   # particle_num: 30   # GNN adapter: fixed particle count per observation
 
   # ── debug visualization ────────────────────────────────────────────────────

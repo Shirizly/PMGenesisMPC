@@ -144,7 +144,7 @@ class EulerianAdapter:
         self.model_dy     = model_dy
         self.cam_params   = cam_params
         self.global_scale = global_scale
-        self.device       = device
+        self.device       = device if torch.cuda.is_available() else 'cpu'
 
         # Pre-compute goal score map (fixed throughout the run).
         self.score_tensor = model_dy.prepare_goal_reward(
@@ -199,7 +199,7 @@ class EulerianAdapter:
     def compute_reward(self, state_batch: torch.Tensor) -> torch.Tensor:
         """(n_sample, Nx, Ny) → (n_sample,) reward (higher = closer to goal)."""
         return (state_batch.clamp(0.0, 1.0) * self.score_tensor
-                ).view(state_batch.shape[0], -1).sum(dim=-1)
+                ).reshape(state_batch.shape[0], -1).sum(dim=-1)
 
     def compute_reward_iou(self, state_batch: torch.Tensor) -> torch.Tensor:
         """(n_sample, Nx, Ny) → (n_sample,) IoU reward with goal region.
@@ -231,7 +231,7 @@ class EulerianAdapter:
     def _reward_default(self, state_batch: torch.Tensor) -> torch.Tensor:
         """Default reward: weighted sum of occupancy × goal score map."""
         return (state_batch.clamp(0.0, 1.0) * self.score_tensor
-                ).view(state_batch.shape[0], -1).sum(dim=-1)
+                ).reshape(state_batch.shape[0], -1).sum(dim=-1)
 
     def _reward_iou(self, state_batch: torch.Tensor) -> torch.Tensor:
         """IoU reward (delegates to compute_reward_iou)."""
@@ -514,7 +514,7 @@ class GNNAdapter:
         occ = _particles_to_occupancy(
             state_batch, self.grid_bounds, self.grid_res, sigma=0.0)  # (n_sample, Nx, Ny)
         return (occ.clamp(0.0, 1.0) * self.occ_score_tensor
-                ).view(occ.shape[0], -1).sum(dim=-1)  # (n_sample,)
+                ).reshape(occ.shape[0], -1).sum(dim=-1)  # (n_sample,)
 
     # ── reward getter interface ────────────────────────────────────────────
 
@@ -550,7 +550,7 @@ class GNNAdapter:
         pts_t = torch.from_numpy(pts_np.astype(np.float32)).to(self.device).unsqueeze(0)
         # Use hard-voxel splatting (sigma=0) — same as EulerianAdapter.obs_to_state
         occ = _particles_to_occupancy(pts_t, self.grid_bounds, self.grid_res, sigma=0.0)
-        return float((occ.clamp(0.0, 1.0) * self.occ_score_tensor).view(1, -1).sum().item())
+        return float((occ.clamp(0.0, 1.0) * self.occ_score_tensor).reshape(1, -1).sum().item())
 
     def set_occupancy_params(self, grid_bounds: dict, grid_res: tuple,
                             occ_score_tensor: torch.Tensor):

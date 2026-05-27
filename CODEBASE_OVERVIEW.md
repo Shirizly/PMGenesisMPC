@@ -87,40 +87,110 @@ H = W = int(box.vol[0] * 1000)   # e.g. 0.128 m → 128 px
 
 **DataLoader batch shapes** (after optional ×8 augmentation — 4 rotations × 2 flips):
 
-| Variable | Shape | Notes |
-|---|---|---|
-| `inputs` | `(B, 2, H, W)` | float32, [0,1] |
-| `physics` | `(B, 3)` | float32, raw physics values |
-| `outputs` | `(B, H, W)` | float32, [0,1] — the label |
-| `pred_next` | `(B, 1, H, W)` | model output, squeezed to `(B, H, W)` for loss |
+| Variable | Shape | Values | Notes |
+|---|---|---|---|
+| `inputs` | `(B, 2, H, W)` | [0, 1] | Ch 0: soft particle occupancy before action; Ch 1: tool trajectory map |
+| `physics` | `(B, 3)` | raw floats | `[material.friction, material.density, box.friction]` |
+| `outputs` | `(B, H, W)` | {0, 1} | Binary occupancy label after action (rendered by cv2, hard-filled) |
+| `logits` | `(B, H, W)` | ℝ | `model(inputs, physics).squeeze(1)` — **raw output, NOT a probability** |
+| `probs` | `(B, H, W)` | (0, 1) | `torch.sigmoid(logits)` — used for all metrics |
 
-**Loss:** `MSELoss(pred_next.squeeze(1), outputs)`
+### Loss function
 
-**Data augmentation** (in-loop, multiplies batch by 8):
-- Rotations: 0°, 90°, 180°, 270° on spatial dims `(-2,-1)`
-- Mirrors: horizontal flip of each rotation
-- `physics` is repeated ×8 (tile along batch dim)
+The primary loss is **MSE on sigmoid output** (not on raw logits):
+
+```python
+probs = torch.sigmoid(logits)
+mse   = F.mse_loss(probs, outputs)          # MSE_WEIGHT = 1.0 default
+```
+
+Full `combined_loss` (default active terms only — other weights are 0.0):
+
+```python
+loss = MSE_WEIGHT   * F.mse_loss(sigmoid(logits), outputs)   # = 1.0
+     + MASS_WEIGHT  * |probs.sum() - outputs.sum()| / N       # = 0.2
+     # BCEWithLogitsLoss, soft Dice, TV, sharpness, add/remove losses are
+     # available but their weights are 0.0 in the default configuration.
+```
+
+**Why MSE on sigmoid, not on logits?**  The label `outputs` is binary {0, 1}.
+Penalising `(sigmoid(logit) − target)²` rather than `(logit − target)²`
+keeps the gradient well-scaled regardless of how saturated the logit is, and
+directly trains the network to produce a calibrated occupancy probability.
+
+### Skip connection and output semantics
+
+`NFDUNetFiLM` returns `head(d1) + x[:, 0:1]` where:
+- `x[:, 0:1]` = **channel 0 of the input** = soft occupancy ∈ [0, 0.5 typical]
+- `head(d1)` = learned correction ∈ ℝ (unconstrained)
+- Combined: a **logit** whose sigmoid is the predicted occupancy
+
+At convergence a well-trained model produces:
+
+| Cell type | Typical logit | `sigmoid(logit)` | Comment |
+|-----------|---------------|-----------------|---------|
+| Material, stays | ≈ +3 to +5 | ≈ 0.95–1.0 | kept by head+skip |
+| Material, swept away | ≈ −3 to −5 | ≈ 0.005–0.05 | head strongly negative |
+| Empty, stays empty | ≈ −3 to −5 | ≈ 0.005–0.05 | head small-negative, skip≈0 |
+| Empty, receives material | ≈ +3 to +5 | ≈ 0.95–1.0 | head strongly positive, skip≈0 |
+
+Crucially: **logits outside (0, 1) produce zero gradient through `clamp(0, 1)`**,
+which is why the MPC reward function must operate on `sigmoid(logits)` rather
+than on raw logits (see Section 11).
+
+### Tool-channel drawing convention (training)
+
+`_draw_plate_cv2` renders the action channel using:
+- **Center** = `(world_x_px, world_y_px)` passed to `cv2.boxPoints` as `(cx, cy)` —
+  i.e. cv2 x-axis = world_x (columns), cv2 y-axis = world_y (rows).
+- **Angle** = plate yaw from the simulator `run["angles"]`, in radians → converted
+  to degrees.  At `angle_sim = 0`: long axis (plate_dim_x = 40 px) along world_x.
+  At `angle_sim = π/2`: long axis along world_y (perpendicular to +x travel).
+- **Intensities**: start position → 0.5, end position → 1.0.
+
+`UNetFiLMPushModel._draw_plate_soft` draws the equivalent using a differentiable
+soft rectangle.  It uses `angle_draw = atan2(Δworld_y, Δworld_x)` (travel direction),
+which equals `angle_sim − π/2` — the same physical orientation, just measured
+from a different zero.
+
+### Data augmentation
+
+In-loop ×8 per batch: 4 rotations × 2 horizontal flips on spatial dims `(-2,-1)`.
+Physics tensor is tiled ×8.  The batch-size argument is divided by 8 to keep
+effective memory usage constant.
 
 ---
 
 ## 4. Models (`GranularDynamics2/myClasses/`)
 
-### `UNetFiLM` *(used in `train_unet_genesis.py`)*
+### `NFDUNetFiLM` *(used by `train_unet_genesis.py` and the MPC)*
 ```
-forward(x: Tensor[B, 2, H, W], physics: Tensor[B, 3]) → Tensor[B, 1, H, W]
+forward(x: Tensor[B, 2, H, W], props: Tensor[B, 3]) → Tensor[B, 1, H, W]
 ```
-- `physics_dim=3` by default
-- Physics vector → MLP → per-stage FiLM (γ, β) applied as `feature * γ + β`
-- Architecture: encoder [64, 128], bottleneck 256, decoder [128, 64], 1×1 conv head
-- **Spatial resolution is preserved** (no stride, only MaxPool+ConvTranspose)
+- FiLM conditioning: each conv block receives `γ(props) ⊙ features + β(props)`.
+  FiLM MLPs initialised to identity (`γ=1, β=0`) so the model starts as an
+  unconditioned U-Net.
+- Architecture: 3-level encoder (b, b×2, b×4 channels, b=8 default), MaxPool2d
+  downsampling, bilinear upsampling; bottleneck at H/8 × W/8.
+- **Output = `head(d1) + x[:, residual_channel:residual_channel+1]`** — a logit.
+  With `residual_channel=0` (standard mode) the skip is the input occupancy
+  channel (Ch 0, ∈ [0, 1]).  This means the output is ℝ-valued; apply sigmoid
+  to get an occupancy probability.
+- **No activation on the output** — the skip connection anchors the scale near the
+  input occupancy, but the combined value is unbounded.
 
-### `UNetConditioned`
+### `NFDUNetFiLMShallow` *(lightweight variant)*
+Same API as `NFDUNetFiLM` with fewer encoder/decoder levels.
+
+### `UNetConditioned` *(legacy)*
 ```
 forward(x: Tensor[B, 2, H, W], physics: Tensor[B, P]) → Tensor[B, 1, H, W]
 ```
-- Concatenates spatially-broadcast physics channels directly onto the input image (`physics_dim=6` default — note mismatch with dataset's 3-element vector, requires matching at construction time)
+- Concatenates spatially-broadcast physics channels directly onto the input image
+  (`physics_dim=6` default — note mismatch with dataset's 3-element vector,
+  requires matching at construction time)
 
-### `UNet` (modular, no physics)
+### `UNet` *(modular, no physics)*
 ```
 forward(x: Tensor[B, C_in, H, W]) → Tensor[B, C_out, H, W]
 ```
@@ -139,13 +209,25 @@ _{id}_data.pt  +  _{id}_config.yaml
       │
       ▼  PileSweepData.__getitem__
       │  • convert positions m→px
-      │  • render particles → Channel 0 (H×W)
-      │  • render tool path → Channel 1 (H×W)
+      │  • render particles with cv2 → Channel 0 (H×W) — soft occ in [0,1]
+      │  • render tool path with cv2 → Channel 1 (H×W) — intensities 0.5/1.0
       │  • extract physics vector (len 3)
       ▼
-input_grid (2,H,W)  +  physics (3,)  →  [DataLoader]  →  UNetFiLM  →  pred (B,1,H,W)
-                                                                               │
-output_grid (H,W)  ──────────────────────────────────────────────────  MSELoss
+input_grid (2,H,W)  +  physics (3,)
+      │
+      ▼  NFDUNetFiLM.forward()
+      │
+logits (B,H,W)  =  head(d1)  +  input_grid[:,0:1]        ← raw ℝ values
+      │
+      ▼  torch.sigmoid()
+      │
+probs (B,H,W)  ∈ (0,1)                                   ← occupancy probability
+      │
+      ├── Training:  F.mse_loss(probs, output_grid)  +  mass_loss + …
+      │              (output_grid = binary label, rendered by cv2)
+      │
+      └── MPC:       (probs.clamp(0,1) * score_tensor).sum()   → reward
+                     ── sigmoid ensures clamp is identity → gradients flow ──
 ```
 
 ---
@@ -284,6 +366,98 @@ Gradients flow through the frozen model's computation graph to reach $\theta$.
 
 ---
 
+## 10. Coordinate Conventions
+
+Three distinct coordinate systems are used across the pipeline. Getting them
+wrong is the single most common source of silent reward ≈ 0 bugs.
+
+### 10.1 Genesis world frame
+
+| Axis | Direction | Notes |
+|------|-----------|-------|
+| world_x | right (+x) | table width |
+| world_y | forward (+y, "north") | table depth |
+| world_z | up (+z) | Genesis is z-up |
+
+Workspace is centred at origin; `wkspc_w = 0.064 m` half-width.
+Overhead camera at `(0, 0, cam_h=0.3 m)`, looking at origin, with `up=(0,1,0)`.
+
+### 10.2 `depth2fgpcd` / `EulerianWrapper` convention
+
+`depth2fgpcd` converts a depth image → 3-D point cloud using camera intrinsics:
+
+```
+fgpcd[:, 0] = (col - cx) * depth / fx  =  cam_x  =  world_x / global_scale
+fgpcd[:, 1] = (row - cy) * depth / fy  =  cam_y  =  −world_y / global_scale
+```
+
+Image rows increase downward; the camera "up" direction (+world_y) corresponds
+to **decreasing** row, so `cam_y = −world_y / gs`.
+
+`_particles_to_occupancy` bins the (cam_x, cam_y) point cloud on a 2-D grid:
+
+```
+occ[b,  ix,  iy]   —   ix = camera-x index = world-x index
+                    —   iy = camera-y index = −world-y index
+```
+
+**EulerianWrapper grid:** `dim 0 = world-x  (ix)`,  `dim 1 = −world-y  (iy)`.
+Larger `iy` → more negative world-y (further "south").
+
+### 10.3 Training / PileSweepData convention
+
+`PileSweepData` (and the cv2 drawing code in `sandbox_manipulation_clean.py`)
+builds `input_grid` with:
+
+```python
+col = world_x * TO_PXL + x_pxl/2   # 1000 px/m, centre at 64 px
+row = world_y * TO_PXL + x_pxl/2
+cv2.circle(grid_np, (col, row), ...)   # fills grid_np[row, col]
+```
+
+So `input_grid[ch, row, col]` where **larger row = larger world_y** (north).
+
+**Dataset grid:** `dim 0 = world-y  (row)`,  `dim 1 = world-x  (col)`.
+
+This is the standard NumPy/cv2 (H × W) layout **but with world-y pointing
+upward** — the opposite of a camera image.
+
+### 10.4 Plate orientation convention
+
+The plate occupies a rotated rectangle.  The `(width, height)` passed to
+`cv2.boxPoints` is `(plate_dim_x, plate_dim_y)` in pixels:
+
+| angle\_sim | plate\_dim\_x (long, 100 px) | plate\_dim\_y (short, 5 px) |
+|-----------|------------------------------|------------------------------|
+| 0         | along world-x (cols)         | along world-y (rows)         |
+| π/2       | along world-y (rows)         | along world-x (cols)         |
+
+For a plate **perpendicular to its direction of travel**:
+`angle_sim = atan2(Δworld_y, Δworld_x) + π/2`.
+
+### 10.5 `UNetFiLMPushModel` convention bridge
+
+`UNetFiLMPushModel.forward` bridges EulerianWrapper ↔ dataset convention:
+
+| Step | Operation | Result shape |
+|------|-----------|--------------|
+| Input | `occ` (EulerianWrapper) | `(B, world_x, −world_y)` |
+| flip dim 1 | `occ.flip([-1])` | `(B, world_x, world_y)` |
+| transpose | `.transpose(-2,-1)` | `(B, world_y, world_x)` = dataset |
+| ... model forward ... | | `(B, world_y, world_x)` |
+| transpose back | `.transpose(-2,-1)` | `(B, world_x, world_y)` |
+| flip dim 1 | `.flip([-1])` | `(B, world_x, −world_y)` = EulerianWrapper |
+
+Action center passed to `_draw_plate_soft`: `(world_y_idx, world_x_idx)` —
+**world-y first** (matches dataset dim 0).
+
+Draw-angle for `_draw_plate_soft`:
+`angle_draw = atan2(Δworld_y, Δworld_x)` (direction of travel, **no +π/2**).
+At `angle_draw=0` the plate's long axis is along `dim 0 = world_y` (⊥ to
+rightward travel), which matches cv2's `angle_sim=π/2` convention.
+
+---
+
 ## 9. Real-Data Training (`train_unet_cg.py`)
 
 Structurally identical to `train_unet_genesis.py`. Key differences:
@@ -294,3 +468,88 @@ Structurally identical to `train_unet_genesis.py`. Key differences:
 | Data root | hardcoded `Genesis/data/` | configurable `data_root` |
 | Physics source | sim config (known) | config or `default_physics` (may be 0s) |
 | Fine-tuning | — | `pretrained_path` loads weights before training |
+
+---
+
+## 11. Training ↔ MPC Interface: the Sigmoid Requirement
+
+This section documents the critical interface contract between the trained model
+and the MPC optimizer.  Violating it causes silent reward ≈ 0 and zero gradients.
+
+### 11.1 What the model outputs
+
+`NFDUNetFiLM.forward()` returns:
+```python
+logit = head(d1) + x[:, 0:1]   # (B, 1, H, W)  ∈ ℝ  (unbounded)
+```
+The model is **trained to produce a logit** — not a probability.  The loss
+`F.mse_loss(sigmoid(logit), target)` pushes the logit toward values where
+`sigmoid(logit) ≈ target ∈ {0, 1}`.  At convergence, typical logit magnitudes
+are ±3 to ±5 (sigmoid saturated at ~0.05 or ~0.95).
+
+### 11.2 What the MPC reward function expects
+
+`EulerianAdapter._reward_default` (the optimization reward) computes:
+```python
+reward = (state_batch.clamp(0.0, 1.0) * score_tensor).reshape(B, -1).sum(-1)
+```
+`score_tensor ∈ [−1, +1]`: goal cells ≈ +1, non-goal ≈ −`empty_penalty`.
+
+For this to work correctly, `state_batch` must contain occupancy probabilities
+in `(0, 1)`, **not raw logits**.
+
+### 11.3 The clamp(0,1) gradient trap
+
+| `state_batch` value | After `clamp(0,1)` | `d(clamp)/d(state)` | Optimizer gradient |
+|---|---|---|---|
+| logit = +5 (material) | 1.0 | **0** (saturated) | **dead** |
+| logit = −5 (empty) | 0.0 | **0** (saturated) | **dead** |
+| logit = 0.3 (ambiguous) | 0.3 | 1 | non-zero |
+| sigmoid(+5) = 0.993 | 0.993 | 1 (inside range) | non-zero |
+| sigmoid(−5) = 0.007 | 0.007 | 1 (inside range) | non-zero |
+
+With raw logits: almost all values are outside `(0, 1)` → `clamp` saturates →
+`grad = 0.00000` printed by `mpc.py`.  The optimizer cannot improve the actions.
+
+The observable symptom:
+```
+iter    1: best=0.0000  mean=-8.7859  std=7.7005  grad=0.00000
+iter   50: best=0.0000  mean=-8.7859  std=7.7005  grad=0.00000   # no progress
+```
+- `best = 0.0`: the best sample predicts empty (all logits ≤ 0 → clamp → 0 → reward = 0).
+  This beats actions that predict material in penalty regions (reward < 0).
+- `mean = −8.7`: other samples predict material at non-goal cells (logit ≥ 1 → clamp = 1
+  → penalty score).
+- `grad = 0.00000`: ALL logits outside `(0, 1)` → zero gradient everywhere.
+
+### 11.4 The fix
+
+`UNetFiLMPushModel.forward` applies sigmoid **before** returning:
+```python
+return torch.sigmoid(occ_pred_ds).transpose(-2, -1).flip(dims=[-1])
+```
+
+Effects:
+1. **Gradient flows**: sigmoid output ∈ (0, 1) → `clamp` is identity → gradient = 1
+   → chain rule reaches `act_seqs` → optimizer converges.
+2. **Correct reward values**: `reward = (sigmoid(logit) * score).sum()` uses
+   the same quantity the model was trained to optimise.
+3. **Multi-step consistency**: each step receives `sigmoid(logit) ∈ (0, 1)` as
+   input, matching the training distribution (occupancy maps, not logits).
+4. **Gradient magnitude**: even at saturated values (`sigmoid(±5) ≈ 0.007/0.993`),
+   `d(sigmoid)/d(logit) = sigmoid(1−sigmoid) ≈ 0.007 > 0` — tiny but non-zero,
+   so the optimizer escapes the region over multiple iterations.
+
+### 11.5 Action channel conventions (training vs. MPC)
+
+Both use a plate rectangle drawn at (start, end) with intensities (0.5, 1.0).
+
+| | Training (`_draw_plate_cv2`) | MPC (`_draw_plate_soft`) |
+|---|---|---|
+| Center format | `(world_x_px, world_y_px)` as cv2 `(cx, cy)` | `(world_y_idx, world_x_idx)` as `(dim0, dim1)` |
+| Angle convention | `angle_sim` = plate yaw (from simulator) | `angle_draw = angle_sim − π/2` = travel direction |
+| Plate long axis at zero angle | along world_x | along world_y (dim 0) |
+| Implementation | cv2 hard-filled, non-differentiable | soft sigmoid mask, differentiable |
+
+Both produce the same physical rectangle (plate perpendicular to travel).
+The `+π/2` offset and the dim-swap from `transpose(-2,-1)` cancel exactly.
