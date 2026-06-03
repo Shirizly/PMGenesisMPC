@@ -1,0 +1,130 @@
+{
+  "name": "unet_shallow_32_collision_aware",
+  "description": "UNetFiLM shallow 32\u00d732 \u2014 collision-aware sampler",
+  "n_episodes": 1,
+  "overrides": {
+    "dataset.settle_steps": 30,
+    "dataset.reset_warmup_steps": 60,
+    "dataset.pos_ctrl_steps": 30,
+    "mpc.action_sampler": "collision_aware"
+  },
+  "model_spec": {
+    "type": "unetfilm-shallow",
+    "weights_path": "runs_cubes/nfu_mse_mass2_shallowlowres/unet_best.pth",
+    "grid_n": 32,
+    "physics_dim": 3
+  },
+  "results_dir": "outputs/experiments/unet_shallow_32_collision_aware/2026-05-29-12-59-43-242800",
+  "reward_gain": {
+    "mean": 2.2403006553649902,
+    "std": 0.0,
+    "min": 2.2403006553649902,
+    "max": 2.2403006553649902,
+    "median": 2.2403006553649902
+  },
+  "reward_final": {
+    "mean": 1.7203960418701172,
+    "std": 0.0,
+    "min": 1.7203960418701172,
+    "max": 1.7203960418701172,
+    "median": 1.7203960418701172
+  },
+  "reward_initial": {
+    "mean": -0.519904613494873,
+    "std": 0.0,
+    "min": -0.519904613494873,
+    "max": -0.519904613494873,
+    "median": -0.519904613494873
+  },
+  "success_rate": 1.0,
+  "compute_time_s": {
+    "mean": 5.133494939804077,
+    "std": 0.0,
+    "min": 5.133494939804077,
+    "max": 5.133494939804077,
+    "median": 5.133494939804077
+  },
+  "compute_time_per_step_s": {
+    "mean": 0.6416868674755096,
+    "std": 0.0,
+    "min": 0.6416868674755096,
+    "max": 0.6416868674755096,
+    "median": 0.6416868674755096
+  },
+  "occ_reward_gain": {
+    "mean": 2.2403006553649902,
+    "std": 0.0,
+    "min": 2.2403006553649902,
+    "max": 2.2403006553649902,
+    "median": 2.2403006553649902
+  },
+  "occ_reward_final": {
+    "mean": 1.7203960418701172,
+    "std": 0.0,
+    "min": 1.7203960418701172,
+    "max": 1.7203960418701172,
+    "median": 1.7203960418701172
+  },
+  "occ_reward_initial": {
+    "mean": -0.519904613494873,
+    "std": 0.0,
+    "min": -0.519904613494873,
+    "max": -0.519904613494873,
+    "median": -0.519904613494873
+  },
+  "mean_prediction_gap": {
+    "mean": 0.5518679320812225,
+    "std": 0.0,
+    "min": 0.5518679320812225,
+    "max": 0.5518679320812225,
+    "median": 0.5518679320812225
+  },
+  "total_experiment_time_s": 32.590518951416016,
+  "episodes": [
+    {
+      "n_steps_completed": 8,
+      "reward_initial": -0.519904613494873,
+      "reward_final": 1.7203960418701172,
+      "reward_gain": 2.2403006553649902,
+      "reward_max": 1.7203960418701172,
+      "step_gains": [
+        1.4960126876831055,
+        0.5476586818695068,
+        0.19662928581237793,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "best_predicted_rewards": [
+        1.504164218902588,
+        1.974644660949707,
+        2.155810832977295,
+        2.322601795196533,
+        2.318328857421875,
+        2.318328619003296,
+        2.321232557296753,
+        2.322082996368408
+      ],
+      "prediction_reward_gaps": [
+        0.5280561447143555,
+        0.4508779048919678,
+        0.43541479110717773,
+        0.602205753326416,
+        0.5979328155517578,
+        0.5979325771331787,
+        0.6008365154266357,
+        0.601686954498291
+      ],
+      "mean_prediction_gap": 0.5518679320812225,
+      "compute_time_s": 5.133494939804077,
+      "compute_time_per_step_s": 0.6416868674755096,
+      "total_time_s": 29.795745372772217,
+      "success": true,
+      "occ_reward_initial": -0.519904613494873,
+      "occ_reward_final": 1.7203960418701172,
+      "occ_reward_gain": 2.2403006553649902
+    }
+  ]
+}

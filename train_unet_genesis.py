@@ -4,10 +4,12 @@
 
 import argparse
 import re
+from datetime import datetime
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import yaml
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
@@ -17,8 +19,8 @@ from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM, NFDUNetFiLMShal
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EPOCHS = 70
-BATCH_SIZE = 64
+EPOCHS = 250
+BATCH_SIZE = 256
 LR = 1e-4
 
 POS_WEIGHT = 20.0
@@ -29,7 +31,7 @@ TV_WEIGHT = 0.0
 MASS_WEIGHT = 0.2
 ADD_WEIGHT = 0.0
 REMOVE_WEIGHT = 0.0
-PATIENCE = 10
+PATIENCE = 100
 CHANGE_THRESHOLD = 1e-3
 DEFAULT_DATA_FOLDERS = ["corl/cube"]
 DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2_addremove")
@@ -126,6 +128,18 @@ def build_model(model_variant: str, input_mode: str):
 
 def default_resolution_scale(model_variant: str) -> float:
    return LOWRES_SCALE if model_variant in ("lowres", "shallow-lowres") else 1.0
+
+
+def unique_log_dir(base: Path) -> Path:
+   """Return base if it has no run_config.yaml yet, otherwise base_2, base_3, …"""
+   if not base.exists() or not (base / "run_config.yaml").exists():
+      return base
+   counter = 2
+   while True:
+      candidate = base.with_name(f"{base.name}_{counter}")
+      if not candidate.exists() or not (candidate / "run_config.yaml").exists():
+         return candidate
+      counter += 1
 
 
 def augment_batch(inputs, outputs, physics):
@@ -342,6 +356,8 @@ if __name__ == "__main__":
          suffixes.append(args.input_mode)
       if suffixes:
          log_dir = log_dir.with_name(f"{log_dir.name}_{'_'.join(suffixes)}")
+   if not args.eval_only:
+      log_dir = unique_log_dir(log_dir)
    data_aug = True
    log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -351,6 +367,57 @@ if __name__ == "__main__":
    print(f"Log dir: {log_dir}")
 
    include_sweep_removed = args.input_mode in ("sweep-removed-input", "sweep-removed-residual")
+
+   # Resolve resume checkpoint now so it can be recorded in the run config.
+   _resolved_resume: Path | None = None
+   if RESUME_TRAINING and not args.fresh_start and not args.eval_only:
+      _resolved_resume = args.resume_checkpoint or default_resume_checkpoint(log_dir)
+
+   if not args.eval_only:
+      run_config = {
+         "script": "train_unet_genesis.py",
+         "started_at": datetime.now().isoformat(timespec="seconds"),
+         "log_dir": str(log_dir),
+         "model": {
+            "type": "NFDUNetFiLM" if args.model_variant not in ("shallow", "shallow-lowres") else "NFDUNetFiLMShallow",
+            "variant": args.model_variant,
+            "input_mode": args.input_mode,
+            "in_channels": 3 if include_sweep_removed else 2,
+            "residual_channel": 2 if args.input_mode == "sweep-removed-residual" else 0,
+         },
+         "training": {
+            "epochs": EPOCHS,
+            "batch_size": args.batch_size,
+            "lr": LR,
+            "lr_scheduler": "StepLR(step_size=10, gamma=0.5)",
+            "data_augmentation": True,
+            "patience": PATIENCE,
+            "improvement_window": 5,
+         },
+         "loss": {
+            "mse_weight": MSE_WEIGHT,
+            "dice_weight": DICE_WEIGHT,
+            "sharpness_weight": SHARPNESS_WEIGHT,
+            "tv_weight": TV_WEIGHT,
+            "mass_weight": MASS_WEIGHT,
+            "add_weight": ADD_WEIGHT,
+            "remove_weight": REMOVE_WEIGHT,
+            "pos_weight_bce": POS_WEIGHT,
+         },
+         "data": {
+            "folders": list(data_folders),
+            "resolution_scale": resolution_scale,
+            "include_sweep_removed": include_sweep_removed,
+         },
+         "resume": {
+            "resumed_from": str(_resolved_resume) if _resolved_resume is not None else None,
+            "fresh_start": args.fresh_start,
+         },
+      }
+      with open(log_dir / "run_config.yaml", "w") as _f:
+         yaml.dump(run_config, _f, sort_keys=False)
+      print(f"Run config saved to {log_dir / 'run_config.yaml'}")
+
    test_dataset: Dataset = PileSweepData(
       data_folders,
       split="test",

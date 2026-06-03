@@ -1,0 +1,121 @@
+{
+  "name": "heuristic_spread_32_ot_guided",
+  "description": "Eulerian heuristic spread 32\u00d732 \u2014 OT-guided sampler",
+  "n_episodes": 1,
+  "overrides": {
+    "dataset.settle_steps": 30,
+    "dataset.reset_warmup_steps": 60,
+    "dataset.pos_ctrl_steps": 30,
+    "mpc.action_sampler": "ot_guided"
+  },
+  "model_spec": {
+    "type": "eulerian",
+    "need_weights": false,
+    "heuristic_type": "spread",
+    "grid_n": 32
+  },
+  "results_dir": "outputs/experiments/heuristic_spread_32_ot_guided/2026-05-28-14-10-41-146836",
+  "reward_gain": {
+    "mean": 15.677921295166016,
+    "std": 0.0,
+    "min": 15.677921295166016,
+    "max": 15.677921295166016,
+    "median": 15.677921295166016
+  },
+  "reward_final": {
+    "mean": 16.296499252319336,
+    "std": 0.0,
+    "min": 16.296499252319336,
+    "max": 16.296499252319336,
+    "median": 16.296499252319336
+  },
+  "reward_initial": {
+    "mean": 0.6185784339904785,
+    "std": 0.0,
+    "min": 0.6185784339904785,
+    "max": 0.6185784339904785,
+    "median": 0.6185784339904785
+  },
+  "success_rate": 1.0,
+  "compute_time_s": {
+    "mean": 1.3200637111663818,
+    "std": 0.0,
+    "min": 1.3200637111663818,
+    "max": 1.3200637111663818,
+    "median": 1.3200637111663818
+  },
+  "compute_time_per_step_s": {
+    "mean": 0.26401274223327637,
+    "std": 0.0,
+    "min": 0.26401274223327637,
+    "max": 0.26401274223327637,
+    "median": 0.26401274223327637
+  },
+  "occ_reward_gain": {
+    "mean": 15.677921295166016,
+    "std": 0.0,
+    "min": 15.677921295166016,
+    "max": 15.677921295166016,
+    "median": 15.677921295166016
+  },
+  "occ_reward_final": {
+    "mean": 16.296499252319336,
+    "std": 0.0,
+    "min": 16.296499252319336,
+    "max": 16.296499252319336,
+    "median": 16.296499252319336
+  },
+  "occ_reward_initial": {
+    "mean": 0.6185784339904785,
+    "std": 0.0,
+    "min": 0.6185784339904785,
+    "max": 0.6185784339904785,
+    "median": 0.6185784339904785
+  },
+  "mean_prediction_gap": {
+    "mean": 2.1021596431732177,
+    "std": 0.0,
+    "min": 2.1021596431732177,
+    "max": 2.1021596431732177,
+    "median": 2.1021596431732177
+  },
+  "total_experiment_time_s": 28.9260413646698,
+  "episodes": [
+    {
+      "n_steps_completed": 5,
+      "reward_initial": 0.6185784339904785,
+      "reward_final": 16.296499252319336,
+      "reward_gain": 15.677921295166016,
+      "reward_max": 16.296499252319336,
+      "step_gains": [
+        2.3047757148742676,
+        0.758589506149292,
+        10.486225128173828,
+        2.0515899658203125,
+        0.07674026489257812
+      ],
+      "best_predicted_rewards": [
+        7.748472690582275,
+        7.416570663452148,
+        9.24996280670166,
+        19.319927215576172,
+        20.065589904785156
+      ],
+      "prediction_reward_gaps": [
+        4.825118541717529,
+        3.7346270084381104,
+        -4.918206214904785,
+        3.100168228149414,
+        3.7690906524658203
+      ],
+      "mean_prediction_gap": 2.1021596431732177,
+      "compute_time_s": 1.3200637111663818,
+      "compute_time_per_step_s": 0.26401274223327637,
+      "total_time_s": 26.894113540649414,
+      "success": true,
+      "occ_reward_initial": 0.6185784339904785,
+      "occ_reward_final": 16.296499252319336,
+      "occ_reward_gain": 15.677921295166016
+    }
+  ]
+}

@@ -225,6 +225,112 @@ class OTPlannerSparse:
         fig.tight_layout()
         return fig
 
+    def extract_push_candidates(
+        self,
+        result          : OTResult,
+        wkspc_w         : float,
+        n_candidates    : int   = 8,
+        div_percentile  : float = 30.0,
+        min_region_cells: int   = 4,
+        approach_px     : float = 3.0,
+        exit_px         : float = 3.0,
+    ) -> list:
+        """Extract concrete push action proposals from an OTResult.
+
+        Identifies coherent-flow regions (low divergence magnitude), finds
+        connected components, and returns ranked push proposals for MPC seeding.
+
+        Parameters
+        ----------
+        result           : OTResult from solve()
+        wkspc_w          : workspace half-width in metres
+        n_candidates     : max number of candidates to return
+        div_percentile   : coherent if div_mag < this percentile of occupied cells
+        min_region_cells : skip regions smaller than this
+        approach_px      : start push this many pixels upstream of the region
+        exit_px          : end push this many pixels downstream of the region
+
+        Returns
+        -------
+        list of dicts sorted descending by score, each containing:
+            'start_world'   : (2,) float  [world_x, world_y] of push start
+            'end_world'     : (2,) float  [world_x, world_y] of push end
+            'direction'     : (2,) float  unit push direction (col, row convention)
+            'score'         : float  higher is better
+            'centroid_grid' : (2,) float  [col, row] of region centroid
+        """
+        from scipy.ndimage import label as nd_label
+
+        n     = self.n
+        scale = (2.0 * wkspc_w) / n    # metres per pixel
+        margin = 2.0 * scale            # 2-pixel clip margin in world coords
+
+        occupied = result.source_mask
+        if not occupied.any():
+            return []
+
+        # 1. Coherence mask (retry at 50th percentile if no cells pass)
+        threshold = np.percentile(result.div_mag[occupied], div_percentile)
+        coherent_mask = occupied & (result.div_mag <= threshold)
+        if not coherent_mask.any():
+            threshold = np.percentile(result.div_mag[occupied], 50.0)
+            coherent_mask = occupied & (result.div_mag <= threshold)
+        if not coherent_mask.any():
+            return []
+
+        # 2. Connected components
+        labeled, n_labels = nd_label(coherent_mask)
+        if n_labels == 0:
+            return []
+
+        candidates = []
+        for k in range(1, n_labels + 1):
+            rows, cols = np.where(labeled == k)
+            if len(rows) < min_region_cells:
+                continue
+
+            # 3. Centroid and mean displacement vector
+            centroid_col = cols.mean()
+            centroid_row = rows.mean()
+            dx = result.vectors_2d[rows, cols, 0].mean()  # col component
+            dy = result.vectors_2d[rows, cols, 1].mean()  # row component
+            mag = np.sqrt(dx ** 2 + dy ** 2)
+            if mag < 1e-3:
+                continue
+            d_hat = np.array([dx, dy]) / mag  # unit vector (col, row)
+
+            # 4. Project region cells onto d_hat to find push extent
+            cells_colrow = np.stack([cols, rows], axis=1).astype(float)
+            centroid     = np.array([centroid_col, centroid_row])
+            proj         = (cells_colrow - centroid) @ d_hat
+            p_min, p_max = proj.min(), proj.max()
+
+            # 5. Start/end in grid coords
+            start_grid = centroid + (p_min - approach_px) * d_hat
+            end_grid   = centroid + (p_max + exit_px)     * d_hat
+
+            # 6. Convert to world coords: (col, row) → (world_x, world_y)
+            start_world = (start_grid - n / 2.0) * scale
+            end_world   = (end_grid   - n / 2.0) * scale
+            lim = wkspc_w - margin
+            start_world = np.clip(start_world, -lim, lim)
+            end_world   = np.clip(end_world,   -lim, lim)
+
+            # 7. Score: large coherent regions rank higher
+            mean_div = result.div_mag[rows, cols].mean()
+            score    = len(rows) / (mean_div + 1e-6)
+
+            candidates.append({
+                'start_world':   start_world,
+                'end_world':     end_world,
+                'direction':     d_hat,
+                'score':         score,
+                'centroid_grid': centroid,
+            })
+
+        candidates.sort(key=lambda x: x['score'], reverse=True)
+        return candidates[:n_candidates]
+
     # ------------------------------------------------------------------
     # Private pipeline steps
     # ------------------------------------------------------------------

@@ -1,0 +1,506 @@
+{
+  "suite_config": "simple_mpc/config/experiments/compare_sampler_ot_fast.yaml",
+  "base_config": "simple_mpc/config/config_simple.yaml",
+  "total_time_s": 2300.529161453247,
+  "n_experiments": 6,
+  "experiments": [
+    {
+      "name": "unet_shallow_32_collision_aware",
+      "description": "UNetFiLM shallow 32\u00d732 \u2014 collision-aware sampler",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.settle_steps": 30,
+        "dataset.reset_warmup_steps": 60,
+        "dataset.pos_ctrl_steps": 30,
+        "mpc.action_sampler": "collision_aware"
+      },
+      "model_spec": {
+        "type": "unetfilm-shallow",
+        "weights_path": "runs_cubes/nfu_mse_mass2_shallowlowres/unet_best.pth",
+        "grid_n": 32,
+        "physics_dim": 3
+      },
+      "results_dir": "outputs/experiments/unet_shallow_32_collision_aware/2026-05-28-15-10-43-342862",
+      "reward_gain": {
+        "mean": -0.6074775218963623,
+        "std": 1.9053209970819662,
+        "min": -3.568596839904785,
+        "max": 2.973907470703125,
+        "median": -0.5976736545562744
+      },
+      "reward_final": {
+        "mean": -2.337458300590515,
+        "std": 6.7765963013402555,
+        "min": -13.1690673828125,
+        "max": 5.994870662689209,
+        "median": -2.398906707763672
+      },
+      "reward_initial": {
+        "mean": -1.7299807786941528,
+        "std": 5.442741255406125,
+        "min": -11.499442100524902,
+        "max": 5.8705315589904785,
+        "median": -0.4744502305984497
+      },
+      "success_rate": 0.5,
+      "compute_time_s": {
+        "mean": 4.977150031089783,
+        "std": 0.03898288096351141,
+        "min": 4.945889917373657,
+        "max": 5.077583644866943,
+        "median": 4.958642246246338
+      },
+      "compute_time_per_step_s": {
+        "mean": 0.6221437538862229,
+        "std": 0.004872860120438926,
+        "min": 0.6182362396717072,
+        "max": 0.6346979556083678,
+        "median": 0.6198302807807923
+      },
+      "occ_reward_gain": {
+        "mean": -0.6074775218963623,
+        "std": 1.9053209970819662,
+        "min": -3.568596839904785,
+        "max": 2.973907470703125,
+        "median": -0.5976736545562744
+      },
+      "occ_reward_final": {
+        "mean": -2.337458300590515,
+        "std": 6.7765963013402555,
+        "min": -13.1690673828125,
+        "max": 5.994870662689209,
+        "median": -2.398906707763672
+      },
+      "occ_reward_initial": {
+        "mean": -1.7299807786941528,
+        "std": 5.442741255406125,
+        "min": -11.499442100524902,
+        "max": 5.8705315589904785,
+        "median": -0.4744502305984497
+      },
+      "mean_prediction_gap": {
+        "mean": 0.814340341091156,
+        "std": 0.7374302706233027,
+        "min": 0.07074698805809021,
+        "max": 2.3266720175743103,
+        "median": 0.7164724618196487
+      },
+      "total_experiment_time_s": 348.07901072502136
+    },
+    {
+      "name": "unet_shallow_32_ot_guided",
+      "description": "UNetFiLM shallow 32\u00d732 \u2014 OT-guided sampler",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.settle_steps": 30,
+        "dataset.reset_warmup_steps": 60,
+        "dataset.pos_ctrl_steps": 30,
+        "mpc.action_sampler": "ot_guided"
+      },
+      "model_spec": {
+        "type": "unetfilm-shallow",
+        "weights_path": "runs_cubes/nfu_mse_mass2_shallowlowres/unet_best.pth",
+        "grid_n": 32,
+        "physics_dim": 3
+      },
+      "results_dir": "outputs/experiments/unet_shallow_32_ot_guided/2026-05-28-15-10-43-342862",
+      "reward_gain": {
+        "mean": 0.2166445255279541,
+        "std": 3.2416964694450696,
+        "min": -2.8452835083007812,
+        "max": 8.525948524475098,
+        "median": -0.6689438819885254
+      },
+      "reward_final": {
+        "mean": -1.5650120496749877,
+        "std": 7.893136806886875,
+        "min": -13.93349838256836,
+        "max": 10.391947746276855,
+        "median": -0.39408254623413086
+      },
+      "reward_initial": {
+        "mean": -1.7816565752029419,
+        "std": 5.784180017254098,
+        "min": -11.088214874267578,
+        "max": 7.079472541809082,
+        "median": -0.4744502305984497
+      },
+      "success_rate": 0.4,
+      "compute_time_s": {
+        "mean": 4.931048266220093,
+        "std": 0.016362191435059355,
+        "min": 4.897316614151001,
+        "max": 4.950972318649292,
+        "median": 4.932511940002442
+      },
+      "compute_time_per_step_s": {
+        "mean": 0.6163810332775116,
+        "std": 0.0020452739293824193,
+        "min": 0.6121645767688751,
+        "max": 0.6188715398311615,
+        "median": 0.6165639925003052
+      },
+      "occ_reward_gain": {
+        "mean": 0.2166445255279541,
+        "std": 3.2416964694450696,
+        "min": -2.8452835083007812,
+        "max": 8.525948524475098,
+        "median": -0.6689438819885254
+      },
+      "occ_reward_final": {
+        "mean": -1.5650120496749877,
+        "std": 7.893136806886875,
+        "min": -13.93349838256836,
+        "max": 10.391947746276855,
+        "median": -0.39408254623413086
+      },
+      "occ_reward_initial": {
+        "mean": -1.7816565752029419,
+        "std": 5.784180017254098,
+        "min": -11.088214874267578,
+        "max": 7.079472541809082,
+        "median": -0.4744502305984497
+      },
+      "mean_prediction_gap": {
+        "mean": 0.7687587693333626,
+        "std": 0.8568685466600277,
+        "min": -0.47670167684555054,
+        "max": 2.3045374155044556,
+        "median": 0.500409722328186
+      },
+      "total_experiment_time_s": 361.574991941452
+    },
+    {
+      "name": "unet_deep_64_collision_aware",
+      "description": "UNetFiLM deep 64\u00d764 \u2014 collision-aware sampler",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.settle_steps": 30,
+        "dataset.reset_warmup_steps": 60,
+        "dataset.pos_ctrl_steps": 30,
+        "mpc.action_sampler": "collision_aware"
+      },
+      "model_spec": {
+        "type": "unetfilm",
+        "weights_path": "runs_cubes/nfu_mse_mass2/unet_best.pth",
+        "grid_n": 64,
+        "physics_dim": 3
+      },
+      "results_dir": "outputs/experiments/unet_deep_64_collision_aware/2026-05-28-15-10-43-342862",
+      "reward_gain": {
+        "mean": 15.084529924392701,
+        "std": 19.021780547192776,
+        "min": -3.2572474479675293,
+        "max": 56.52399444580078,
+        "median": 12.58620023727417
+      },
+      "reward_final": {
+        "mean": 10.30372495651245,
+        "std": 12.908384079775878,
+        "min": -6.594546318054199,
+        "max": 33.8770866394043,
+        "median": 13.386781215667725
+      },
+      "reward_initial": {
+        "mean": -4.780804562568664,
+        "std": 12.319500831278194,
+        "min": -25.99506378173828,
+        "max": 11.545989990234375,
+        "median": -1.1410361528396606
+      },
+      "success_rate": 0.7,
+      "compute_time_s": {
+        "mean": 22.025265657806397,
+        "std": 0.2133281499809727,
+        "min": 21.660471313476563,
+        "max": 22.38096935272217,
+        "median": 22.09663009262085
+      },
+      "compute_time_per_step_s": {
+        "mean": 2.7531582072257996,
+        "std": 0.026666018747621586,
+        "min": 2.7075589141845704,
+        "max": 2.797621169090271,
+        "median": 2.762078761577606
+      },
+      "occ_reward_gain": {
+        "mean": 15.084529924392701,
+        "std": 19.021780547192776,
+        "min": -3.2572474479675293,
+        "max": 56.52399444580078,
+        "median": 12.58620023727417
+      },
+      "occ_reward_final": {
+        "mean": 10.30372495651245,
+        "std": 12.908384079775878,
+        "min": -6.594546318054199,
+        "max": 33.8770866394043,
+        "median": 13.386781215667725
+      },
+      "occ_reward_initial": {
+        "mean": -4.780804562568664,
+        "std": 12.319500831278194,
+        "min": -25.99506378173828,
+        "max": 11.545989990234375,
+        "median": -1.1410361528396606
+      },
+      "mean_prediction_gap": {
+        "mean": 10.682583287358284,
+        "std": 3.8467547692201194,
+        "min": 5.775639891624451,
+        "max": 19.67539855837822,
+        "median": 8.953522592782974
+      },
+      "total_experiment_time_s": 518.6152610778809
+    },
+    {
+      "name": "unet_deep_64_ot_guided",
+      "description": "UNetFiLM deep 64\u00d764 \u2014 OT-guided sampler",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.settle_steps": 30,
+        "dataset.reset_warmup_steps": 60,
+        "dataset.pos_ctrl_steps": 30,
+        "mpc.action_sampler": "ot_guided"
+      },
+      "model_spec": {
+        "type": "unetfilm",
+        "weights_path": "runs_cubes/nfu_mse_mass2/unet_best.pth",
+        "grid_n": 64,
+        "physics_dim": 3
+      },
+      "results_dir": "outputs/experiments/unet_deep_64_ot_guided/2026-05-28-15-10-43-342862",
+      "reward_gain": {
+        "mean": -0.3113860607147217,
+        "std": 5.555896525008502,
+        "min": -10.994906425476074,
+        "max": 9.160065650939941,
+        "median": -1.2843854427337646
+      },
+      "reward_final": {
+        "mean": -5.308857059478759,
+        "std": 11.988630969552059,
+        "min": -23.783546447753906,
+        "max": 10.509590148925781,
+        "median": -3.2766051292419434
+      },
+      "reward_initial": {
+        "mean": -4.997470998764038,
+        "std": 12.262061149629375,
+        "min": -25.949329376220703,
+        "max": 11.545989990234375,
+        "median": -2.2287213802337646
+      },
+      "success_rate": 0.4,
+      "compute_time_s": {
+        "mean": 21.65424843521118,
+        "std": 0.014492646364687332,
+        "min": 21.63612186431885,
+        "max": 21.68329746246338,
+        "median": 21.651401741027833
+      },
+      "compute_time_per_step_s": {
+        "mean": 2.7067810544013975,
+        "std": 0.0018115807955859165,
+        "min": 2.704515233039856,
+        "max": 2.7104121828079224,
+        "median": 2.706425217628479
+      },
+      "occ_reward_gain": {
+        "mean": -0.3113860607147217,
+        "std": 5.555896525008502,
+        "min": -10.994906425476074,
+        "max": 9.160065650939941,
+        "median": -1.2843854427337646
+      },
+      "occ_reward_final": {
+        "mean": -5.308857059478759,
+        "std": 11.988630969552059,
+        "min": -23.783546447753906,
+        "max": 10.509590148925781,
+        "median": -3.2766051292419434
+      },
+      "occ_reward_initial": {
+        "mean": -4.997470998764038,
+        "std": 12.262061149629375,
+        "min": -25.949329376220703,
+        "max": 11.545989990234375,
+        "median": -2.2287213802337646
+      },
+      "mean_prediction_gap": {
+        "mean": 14.778683422505855,
+        "std": 4.033612494047631,
+        "min": 7.188502490520477,
+        "max": 20.743132650852203,
+        "median": 14.766762182116508
+      },
+      "total_experiment_time_s": 425.65943670272827
+    },
+    {
+      "name": "heuristic_spread_32_collision_aware",
+      "description": "Eulerian heuristic spread 32\u00d732 \u2014 collision-aware sampler",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.settle_steps": 30,
+        "dataset.reset_warmup_steps": 60,
+        "dataset.pos_ctrl_steps": 30,
+        "mpc.action_sampler": "collision_aware"
+      },
+      "model_spec": {
+        "type": "eulerian",
+        "need_weights": false,
+        "heuristic_type": "spread",
+        "grid_n": 32
+      },
+      "results_dir": "outputs/experiments/heuristic_spread_32_collision_aware/2026-05-28-15-10-43-342862",
+      "reward_gain": {
+        "mean": 20.150089168548583,
+        "std": 5.820953038395889,
+        "min": 4.518763542175293,
+        "max": 26.090503692626953,
+        "median": 21.977190017700195
+      },
+      "reward_final": {
+        "mean": 20.850031757354735,
+        "std": 4.340352660207361,
+        "min": 13.318804740905762,
+        "max": 29.559688568115234,
+        "median": 21.15998649597168
+      },
+      "reward_initial": {
+        "mean": 0.6999427437782287,
+        "std": 5.046907765834514,
+        "min": -7.226473808288574,
+        "max": 8.800041198730469,
+        "median": 0.882391631603241
+      },
+      "success_rate": 1.0,
+      "compute_time_s": {
+        "mean": 1.2870117352485657,
+        "std": 0.0028440702744559924,
+        "min": 1.2831990737915038,
+        "max": 1.291353982925415,
+        "median": 1.2874302096366883
+      },
+      "compute_time_per_step_s": {
+        "mean": 0.16087646690607071,
+        "std": 0.00035550878430699905,
+        "min": 0.16039988422393797,
+        "max": 0.16141924786567688,
+        "median": 0.16092877620458604
+      },
+      "occ_reward_gain": {
+        "mean": 20.150089168548583,
+        "std": 5.820953038395889,
+        "min": 4.518763542175293,
+        "max": 26.090503692626953,
+        "median": 21.977190017700195
+      },
+      "occ_reward_final": {
+        "mean": 20.850031757354735,
+        "std": 4.340352660207361,
+        "min": 13.318804740905762,
+        "max": 29.559688568115234,
+        "median": 21.15998649597168
+      },
+      "occ_reward_initial": {
+        "mean": 0.6999427437782287,
+        "std": 5.046907765834514,
+        "min": -7.226473808288574,
+        "max": 8.800041198730469,
+        "median": 0.882391631603241
+      },
+      "mean_prediction_gap": {
+        "mean": 1.075099277496338,
+        "std": 0.7296434302361237,
+        "min": -0.25091731548309326,
+        "max": 2.1279375553131104,
+        "median": 1.0787161588668823
+      },
+      "total_experiment_time_s": 318.99734115600586
+    },
+    {
+      "name": "heuristic_spread_32_ot_guided",
+      "description": "Eulerian heuristic spread 32\u00d732 \u2014 OT-guided sampler",
+      "n_episodes": 10,
+      "overrides": {
+        "dataset.settle_steps": 30,
+        "dataset.reset_warmup_steps": 60,
+        "dataset.pos_ctrl_steps": 30,
+        "mpc.action_sampler": "ot_guided"
+      },
+      "model_spec": {
+        "type": "eulerian",
+        "need_weights": false,
+        "heuristic_type": "spread",
+        "grid_n": 32
+      },
+      "results_dir": "outputs/experiments/heuristic_spread_32_ot_guided/2026-05-28-15-10-43-342862",
+      "reward_gain": {
+        "mean": 17.880488872528076,
+        "std": 7.143570362903751,
+        "min": 3.568979263305664,
+        "max": 28.81707191467285,
+        "median": 15.849233150482178
+      },
+      "reward_final": {
+        "mean": 18.462681198120116,
+        "std": 6.147141996668491,
+        "min": 8.702759742736816,
+        "max": 29.709491729736328,
+        "median": 18.918594360351562
+      },
+      "reward_initial": {
+        "mean": 0.5821922898292542,
+        "std": 5.010009136200725,
+        "min": -7.226473808288574,
+        "max": 8.800041198730469,
+        "median": 0.8657506108283997
+      },
+      "success_rate": 1.0,
+      "compute_time_s": {
+        "mean": 1.2880615168094633,
+        "std": 0.0023867749852905327,
+        "min": 1.2845967350006102,
+        "max": 1.2930709419250488,
+        "median": 1.2880290718078613
+      },
+      "compute_time_per_step_s": {
+        "mean": 0.16100768960118292,
+        "std": 0.0002983468731613166,
+        "min": 0.16057459187507628,
+        "max": 0.1616338677406311,
+        "median": 0.16100363397598266
+      },
+      "occ_reward_gain": {
+        "mean": 17.880488872528076,
+        "std": 7.143570362903751,
+        "min": 3.568979263305664,
+        "max": 28.81707191467285,
+        "median": 15.849233150482178
+      },
+      "occ_reward_final": {
+        "mean": 18.462681198120116,
+        "std": 6.147141996668491,
+        "min": 8.702759742736816,
+        "max": 29.709491729736328,
+        "median": 18.918594360351562
+      },
+      "occ_reward_initial": {
+        "mean": 0.5821922898292542,
+        "std": 5.010009136200725,
+        "min": -7.226473808288574,
+        "max": 8.800041198730469,
+        "median": 0.8657506108283997
+      },
+      "mean_prediction_gap": {
+        "mean": 1.5731586158275603,
+        "std": 1.1128210799955174,
+        "min": 0.29091745615005493,
+        "max": 3.8694119453430176,
+        "median": 1.5453775525093079
+      },
+      "total_experiment_time_s": 327.00094771385193
+    }
+  ]
+}

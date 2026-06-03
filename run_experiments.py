@@ -35,6 +35,7 @@ import time
 import json
 import shutil
 import argparse
+import yaml
 
 import numpy as np
 import torch
@@ -1001,6 +1002,7 @@ def run_episode(
     need_raw_obs = bool(output_cfg.get('save_raw_obs', False)) or need_video
     need_states = bool(output_cfg.get('save_states', False)) or need_video
     need_states_pred = need_video
+    need_trans = bool(output_cfg.get('save_mpc_transitions', False))
 
     result  = run_simple_mpc(
         env,
@@ -1010,6 +1012,7 @@ def run_episode(
         collect_raw_obs=need_raw_obs,
         collect_states=need_states,
         collect_states_pred=need_states_pred,
+        collect_mpc_transitions=need_trans,
     )
     metrics = compute_episode_metrics(
         result, success_threshold=output_cfg.get('success_threshold', 0.0))
@@ -1063,6 +1066,17 @@ def run_episode(
         else:
             _save_prediction_video(
                 result, ep_dir, cam_params, goal_img, fps=fps)
+
+    if need_trans and result.get('mpc_transitions') is not None:
+        _exp_dir  = os.path.dirname(ep_dir)
+        trans_dir = os.path.join('mpc_transitions',
+                                 os.path.basename(ep_dir))
+        os.makedirs(trans_dir, exist_ok=True)
+        torch.save(result['mpc_transitions'],
+                   os.path.join(trans_dir, f'_{ep_idx}_data.pt'))
+        with open(os.path.join(trans_dir, f'_{ep_idx}_config.yaml'), 'w') as _fh:
+            yaml.dump(env._sim._config, _fh, default_flow_style=False)
+        print(f'    Saved MPC transitions → {trans_dir}/_{ep_idx}_data.pt')
 
     return metrics
 

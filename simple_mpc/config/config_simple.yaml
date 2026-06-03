@@ -47,7 +47,7 @@ dataset:
   # pos_ctrl_steps : steps used to lower and lift the plate (position control).
   #                  Was hardcoded at 100; 60 is fast enough for a 4 cm lift.
   settle_steps: 100               # post-action settle (formerly hardcoded 100)
-  reset_warmup_steps: 150         # post-shuffle settle (was 500 but was a no-op)
+  reset_warmup_steps: 10         # post-shuffle settle (was 500 but was a no-op)
   pos_ctrl_steps: 60              # plate lower/lift steps (was hardcoded 100)
   # Pusher plate geometry — used by PhysicsAwareActionSampler and genesis_env.step
   plate_length: 0.04           # plate long-axis length (metres); matches Genesis config
@@ -72,10 +72,10 @@ mpc:
     physics_dim: 3
 
   # ── core MPC parameters ────────────────────────────────────────────────────
-  n_mpc: 20           # number of real-world steps to execute
+  n_mpc: 8           # number of real-world steps to execute
   n_look_ahead: 1    # planning horizon (steps rolled out in model space)
-  n_sample: 512       # candidates per optimizer call (each randomly initialised)
-  n_update_iter: 50  # Adam iterations per MPC step
+  n_sample: 2048       # candidates per optimizer call (each randomly initialised)
+  n_update_iter: 10  # Adam iterations per MPC step
   # particle_num: 30   # GNN adapter: fixed particle count per observation
 
   # ── debug visualization ────────────────────────────────────────────────────
@@ -114,9 +114,8 @@ mpc:
     empty_penalty: 0.2
 
   gd:
-    lr: 0.002          # Adam learning rate — raise if Δr curves are flat;
+    lr: 0.005          # Adam learning rate — raise if Δr curves are flat;
                       # lower if they oscillate (reward drops after peaking)
-    beta_filter: 0.7  # not used by simple_mpc; kept for structural compatibility
 
   # ── task ──────────────────────────────────────────────────────────────────
   task:

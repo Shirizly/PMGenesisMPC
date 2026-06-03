@@ -282,6 +282,16 @@ class EulerianAdapter:
         """Return occupancy as numpy (Nx, Ny) for debug_vis helpers."""
         return state[0].cpu().numpy()
 
+    def get_ot_grids(self, state: torch.Tensor) -> tuple:
+        """Return (source_grid, goal_grid) as (H, W) float32 numpy arrays.
+
+        ``source_grid`` is the current occupancy; ``goal_grid`` is a binary
+        mask of the goal region (1 inside goal, 0 elsewhere).
+        """
+        source_grid = state.squeeze(0).cpu().numpy().astype(np.float32)
+        goal_grid   = (self.score_np > 0).astype(np.float32)
+        return source_grid, goal_grid
+
 
 # ─────────────────────────────────────────── GNN adapter ─────────────────────
 
@@ -599,6 +609,10 @@ class GNNAdapter:
         n_particles = state.shape[1]
         print(f"  step {step}: {n_particles} particles  "
               f"particle_dens={self._particle_dens:.2f}")
+
+    def get_ot_grids(self, state: torch.Tensor) -> tuple:
+        """OT grids not available for GNN adapter; returns (None, None)."""
+        return None, None
 
 
 # ─────────────────────────────────────────────────── factory ─────────────────
