@@ -3,3 +3,9 @@ Genesis/utilities/__pycache__/*
 Genesis/__pycache__/*
 .github/
 *raw_obs.npy
+Genesis/data/ignore/
+unet_epoch_*.pth
+gnn_epoch_*.pth
+stn_epoch_*.pth
+nca_epoch_*.pth
+*.png

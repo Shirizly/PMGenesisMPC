@@ -1,0 +1,34 @@
+script: train_unet_genesis.py
+started_at: '2026-06-09T02:16:31'
+log_dir: runs_cubes/nfu_mse_mass2_addremove
+model:
+  type: NFDUNetFiLM
+  variant: full
+  input_mode: standard
+  in_channels: 2
+  residual_channel: 0
+training:
+  epochs: 500
+  batch_size: 256
+  lr: 0.0001
+  lr_scheduler: StepLR(step_size=10, gamma=0.5)
+  data_augmentation: true
+  patience: 100
+  improvement_window: 5
+loss:
+  mse_weight: 1.0
+  dice_weight: 0.0
+  sharpness_weight: 0.0
+  tv_weight: 0.0
+  mass_weight: 0.2
+  add_weight: 0.0
+  remove_weight: 0.0
+  pos_weight_bce: 20.0
+data:
+  folders:
+  - corl/cube/n10/size0.01025
+  resolution_scale: 1.0
+  include_sweep_removed: false
+resume:
+  resumed_from: runs_cubes/nfu_mse_mass2_addremove/unet_epoch_70.pth
+  fresh_start: false

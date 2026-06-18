@@ -1,0 +1,32 @@
+script: train_GNN_genesis.py
+started_at: '2026-06-11T11:42:05'
+device: cuda
+log_dir: runs_cubes/gnn_mse_smalldata_2
+model:
+  type: PropNetDiffDenModel
+  config:
+    train:
+      particle:
+        nf_effect: 150
+        add_delta: false
+        adj_thresh: 0.08
+training:
+  epochs: 100
+  batch_size: 512
+  lr: 0.0001
+  lr_scheduler: StepLR(step_size=100, gamma=0.75)
+  patience: 100
+  save_every: 10
+data:
+  folders:
+  - ignore/cube/n50
+  val_pct: 10
+  test_pct: 10
+  action_sigma: null
+  split_strategy: deterministic stratified over per-folder physics groups
+features:
+  target: states_[..., :3]
+  input_state: states[..., :3]
+  particle_attr: constant 1 per particle
+  s_delta: distance-weighted action displacement from p_starts/p_stops
+  particle_density: material.density from run config

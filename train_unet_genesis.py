@@ -19,22 +19,25 @@ from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM, NFDUNetFiLMShal
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EPOCHS = 250
-BATCH_SIZE = 256
+EPOCHS = 50
+BATCH_SIZE = 64
 LR = 1e-4
+SCHEDULER_STEP_SIZE = 100
+SCHEDULER_GAMMA = 0.75
+DATA_AUGMENTATION = False
 
-POS_WEIGHT = 20.0
+POS_WEIGHT = 0.0
 DICE_WEIGHT = 0.0
 MSE_WEIGHT = 1.0
 SHARPNESS_WEIGHT = 0.0
 TV_WEIGHT = 0.0
-MASS_WEIGHT = 0.2
+MASS_WEIGHT = 0.0
 ADD_WEIGHT = 0.0
 REMOVE_WEIGHT = 0.0
 PATIENCE = 100
 CHANGE_THRESHOLD = 1e-3
-DEFAULT_DATA_FOLDERS = ["corl/cube"]
-DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_mass2_addremove")
+DEFAULT_DATA_FOLDERS = ["ignore/cube/n50/size0.005"]
+DEFAULT_LOG_DIR = Path("runs_cubes/nfu_mse_tinydata")
 RESUME_TRAINING = True
 MODEL_VARIANT = "full"
 INPUT_MODE = "standard"
@@ -358,7 +361,7 @@ if __name__ == "__main__":
          log_dir = log_dir.with_name(f"{log_dir.name}_{'_'.join(suffixes)}")
    if not args.eval_only:
       log_dir = unique_log_dir(log_dir)
-   data_aug = True
+   data_aug = DATA_AUGMENTATION
    log_dir.mkdir(parents=True, exist_ok=True)
 
    print(f"Model variant: {args.model_variant}")
@@ -389,7 +392,7 @@ if __name__ == "__main__":
             "epochs": EPOCHS,
             "batch_size": args.batch_size,
             "lr": LR,
-            "lr_scheduler": "StepLR(step_size=10, gamma=0.5)",
+            "lr_scheduler": "StepLR(step_size=" + str(SCHEDULER_STEP_SIZE) + ", gamma=" + str(SCHEDULER_GAMMA) + ")",
             "data_augmentation": True,
             "patience": PATIENCE,
             "improvement_window": 5,
@@ -472,13 +475,13 @@ if __name__ == "__main__":
    )
    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
    if start_epoch > 0:
-      resumed_lr = LR * (0.5 ** (start_epoch // 10))
+      resumed_lr = LR * (SCHEDULER_GAMMA ** (start_epoch // SCHEDULER_STEP_SIZE))
       for param_group in optimizer.param_groups:
          param_group["lr"] = resumed_lr
       print(f"Resumed optimizer learning rate: {resumed_lr:.8f}")
    writer = SummaryWriter(log_dir=log_dir)
    scaler = torch.amp.GradScaler(enabled=DEVICE == "cuda")
-   scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+   scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=SCHEDULER_STEP_SIZE, gamma=SCHEDULER_GAMMA)
 
    batch_size = args.batch_size // 8 if data_aug else args.batch_size
    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=DEVICE == "cuda")
