@@ -1,0 +1,26 @@
+# Genesis simulation data — cube push dataset
+# Covers n10 through n50 particle counts (mixed training for generalisation).
+# Physics is fixed at training defaults; normalization bounds are listed here
+# so that PhysicsBounds.from_config() can be called without hardcoded values.
+
+type: genesis
+
+paths:
+  - corl/cube/n10
+  - corl/cube/n20
+  - corl/cube/n30
+  - corl/cube/n40
+  - corl/cube/n50
+
+val_pct:  5
+test_pct: 5
+
+resolution_scale:      1.0
+include_sweep_removed: false
+include_physics:       true
+
+physics:
+  normalization:
+    friction:     {min: 0.05, max: 0.50}
+    density:      {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

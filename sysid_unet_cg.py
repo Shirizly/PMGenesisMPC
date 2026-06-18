@@ -31,19 +31,20 @@ from tqdm import trange
 
 from GranularDynamics2.myClasses.UNetModels_conditioned import UNetFiLM
 from RealData.dataset import RealPileSweepData, SingleRunData
+from physics.normalization import PhysicsBounds
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Physics bounds: [min, max] for [friction, density, box_friction]
-# Matching the ranges used during simulation data generation.
+# Derived from PhysicsBounds.default() so all callsites share one definition.
+_pb = PhysicsBounds.default()
 PHYSICS_BOUNDS = torch.tensor(
     [
-        [0.05,    0.50  ],   # friction
-        [750.0, 5000.0  ],   # density  (kg/m³)
-        [0.05,    0.50  ],   # box_friction
+        [_pb.friction_min,     _pb.friction_max    ],   # friction
+        [_pb.density_min,      _pb.density_max     ],   # density  (kg/m³)
+        [_pb.box_friction_min, _pb.box_friction_max],   # box_friction
     ],
     dtype=torch.float32,
-    device=DEVICE,
 )
 
 PHYSICS_NAMES = ["friction", "density", "box_friction"]

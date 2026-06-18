@@ -1,0 +1,26 @@
+# Training config: GNN PropNet dynamics model
+#
+# NOTE: GNN training is NOT yet integrated into the new Trainer framework.
+# This config is a placeholder / documentation only.
+# Use train_GNN_genesis.py directly:
+#
+#   conda activate pme && python train_GNN_genesis.py
+#
+# When GNN training is added to the Trainer, this file will become a
+# functional config.  The key differences from Eulerian training:
+#   - batch dict has different keys (particle positions, not occupancy grids)
+#   - augmentation: false (no spatial rot/flip of particle clouds yet)
+#   - physics: raw density scalar, not a normalised vector
+#   - loss: particle MSE, not occupancy MSE
+
+# model:   configs/model/gnn_propnet.yaml   ← not yet registered
+# dataset: ???                              ← not yet implemented
+
+training:
+  augmentation: false   # GNN does not use the Eulerian ×8 augmentation
+
+# For reference, the GNN training parameters from train_GNN_genesis.py:
+#   epochs:     1000
+#   batch_size: 8
+#   lr:         1e-4
+#   nf_effect:  150

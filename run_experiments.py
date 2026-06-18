@@ -64,6 +64,7 @@ from utils import (
 )
 from env.genesis_env import GenesisEnv
 from model.gnn_dyn import PropNetDiffDenModel
+from model.model_card import load_model_from_card
 from simple_mpc import run_simple_mpc
 from simple_mpc.benchmark import benchmark_push_throughput
 
@@ -125,15 +126,29 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
 
     model_spec keys
     ---------------
-    type        : 'gnn' | 'eulerian'
+    type        : 'gnn' | 'eulerian' | 'unetfilm' | 'unetfilm-shallow'
+                  OR set ``model_card`` to a path and this key is auto-detected.
+    model_card  : path to a model_card.yaml file (new framework).  When present
+                  all other keys are ignored and the model is loaded via
+                  ``model.model_card.load_model_from_card``.
     folder      : checkpoint directory.
-                  GNN: relative to ``data/gnn_dyn_model/`` or absolute.
-                  Eulerian: relative to ``data/eulerian_model/`` or absolute.
     iter_num    : -1  → load ``net_best.pth``
                   N   → load ``net_epoch_0_iter_N.pth``
     need_weights: bool, default True. If False, skip weight loading (for heuristic models).
     heuristic_type: for Eulerian heuristics, one of 'splat'|'fluid'|'spread' (default 'spread').
     """
+    # ── New framework: load via model card ────────────────────────────────────
+    if "model_card" in model_spec:
+        card_path = model_spec["model_card"]
+        key = ("model_card", str(card_path))
+        if not force_reload and key in _model_cache:
+            print(f"    [model cache hit]  {key}")
+            return _model_cache[key]
+        print(f"    Loading model from card: {card_path}")
+        model = load_model_from_card(card_path, env=env, mpc_cfg=cfg.get("dataset"))
+        _model_cache[key] = model
+        return model
+
     key = _cache_key(model_spec)
     if not force_reload and key in _model_cache:
         print(f"    [model cache hit]  {key}")

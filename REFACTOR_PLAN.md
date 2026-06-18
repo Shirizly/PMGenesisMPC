@@ -449,11 +449,18 @@ def load_model(model_spec: dict, cfg: dict, env) -> EulerianModelWrapper | PropN
 ## 13. Open Questions / Decisions Needed
 
 1. **Config composition strategy** — should dataset configs be inline in training configs, or referenced by path (`dataset: !include configs/dataset/genesis_cube.yaml`)? YAML anchors/includes require PyYAML extensions; inline is simpler to start.
+Referenced by path.
 
 2. **`train_unet_cg.py` scope** — this script uses `UNetConditioned` (the old concatenation-based model), not `NFDUNetFiLM`. Should it be retired in favour of real-data fine-tuning via the unified trainer (same model, different `dataset.type: real`)?
+yes.
 
 3. **GNN adapter physics normalisation** — `train_GNN_genesis.py` passes raw `density` (not normalised) to `PropNetDiffDenModel`. The GNN uses it differently (as a per-particle scalar, not a FiLM condition). Should GNN physics go through the same normalization pipeline, or stay raw?
+Don't touch it yet, I'll figure out this issue later.
 
 4. **Checkpoint format** — currently `unet_best.pth` is a raw `state_dict`. Should the refactor switch to saving `{"model_state_dict": ..., "model_card": {...}}` in one file, or keep the model card as a sidecar YAML? Sidecar is more human-readable and easier to inspect.
+Sidecar.
 
 5. **Backwards compatibility** — `run_experiments.py` experiment YAMLs currently reference `model.type: unetfilm` and `model.weights_path`. Should the old format remain supported indefinitely via a compatibility shim, or is a one-time migration of all experiment YAMLs acceptable?
+One time migration is fine, but if heavy, it's also fine to leave them in the past, none work very well.
+
+

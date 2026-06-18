@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import yaml
 import torch
+from physics.normalization import PhysicsBounds
 import torch.nn.functional as F
 import os
 import math
@@ -24,6 +25,7 @@ class PileSweepData(Dataset):
             test_pct: int = 5,
             resolution_scale: float = 1.0,
             include_sweep_removed: bool = False,
+            physics_bounds: PhysicsBounds | None = None,
         ):
         """
         Initialize dataset with either a folder containing data or a specific run.
@@ -48,6 +50,7 @@ class PileSweepData(Dataset):
         self._run_lengths = []
         self._plate_cache = {}
         self._physics = torch.zeros((3,), dtype=torch.float32)
+        self._physics_bounds = physics_bounds or PhysicsBounds.default()
         self.resolution_scale = float(resolution_scale)
         self.to_pxl = TO_PXL * self.resolution_scale
         self.include_sweep_removed = bool(include_sweep_removed)
@@ -586,10 +589,12 @@ class PileSweepData(Dataset):
             target[mask] = float(drawing)
 
     def _det_physics(self, config):
-        self._physics[0] = (config["material"]["friction"] - 0.05) / (0.5  - 0.05)
-        self._physics[1] = (config["material"]["density"]  -  750) / (5000 -  750)
-        self._physics[2] = (config["box"]["friction"]      - 0.05) / (0.5  - 0.05)
-        # self._physics[3] = config["plate"]["speed"]
+        raw = torch.tensor([
+            float(config["material"]["friction"]),
+            float(config["material"]["density"]),
+            float(config["box"]["friction"]),
+        ], dtype=torch.float32)
+        self._physics[:] = self._physics_bounds.normalize(raw)
 
     def __getitem__(self, idx: int):
         self._clear_grids()

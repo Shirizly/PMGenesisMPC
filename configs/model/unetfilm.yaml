@@ -1,0 +1,16 @@
+# Full-depth FiLM-conditioned U-Net (NFDUNetFiLM).
+#
+# forward(input: Tensor[B,2,H,W], physics: Tensor[B,3]) → Tensor[B,1,H,W]
+#
+# input_mode options:
+#   standard              — 2 channels: [occupancy, action]
+#   sweep-removed-input   — 3 channels: [occupancy, action, swept_region]
+#   sweep-removed-residual— 3 channels as above; output added to channel 2
+
+type: unetfilm
+
+in_channels:      2      # overridden automatically for sweep-removed modes
+cond_dim:         3      # physics conditioning dimension (friction, density, box_friction)
+uses_physics:     true
+input_mode:       standard
+residual_channel: 0      # residual skip: 0=no skip, n=add input channel n to output

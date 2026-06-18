@@ -1,0 +1,17 @@
+# PropNet GNN dynamics model (PropNetDiffDenModel).
+#
+# NOTE: GNN training is NOT yet integrated into the new Trainer framework.
+# Use train_GNN_genesis.py directly for training.
+#
+# This file documents the model config schema for use with
+# model/model_card.py's _load_lagrangian() at inference time.
+#
+# The GNN operates on raw particle clouds (not occupancy grids) and uses
+# raw density as a per-particle scalar — it does NOT use the normalised
+# [0, 1] physics vector.
+
+type: gnn-propnet   # NOT yet registered in registry/model_registry.py
+
+nf_effect:  150     # effect network hidden size
+add_delta:  false   # whether to predict position delta (vs. absolute position)
+adj_thresh: 0.08    # adjacency radius in normalised world units
