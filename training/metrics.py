@@ -35,6 +35,22 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from training.types import (
+    EulerianBatch,
+    LagrangianBatch,
+    ModelOutput,
+    prediction_to_logits,
+)
+
+
+def build_metrics(model_type: str):
+    """Return the metric accumulator suited to the model representation."""
+    if model_type in ("unetfilm", "unetfilm-shallow"):
+        return EulerianMetrics()
+    if model_type in ("gnn-propnet",):
+        return LagrangianMetrics()
+    return EulerianMetrics()
+
 
 class EulerianMetrics:
     """
@@ -63,7 +79,7 @@ class EulerianMetrics:
         )
 
     @torch.no_grad()
-    def update(self, prediction: torch.Tensor, batch: dict):
+    def update(self, prediction: torch.Tensor | ModelOutput, batch: EulerianBatch):
         """
         Accumulate metrics for one batch.
 
@@ -72,9 +88,15 @@ class EulerianMetrics:
         prediction : Tensor[B, 1, H, W]  — raw logit
         batch      : dict with "input" Tensor[B, C, H, W] and "target" Tensor[B, H, W]
         """
-        logits  = prediction.squeeze(1).float()  # (B, H, W)
-        targets = batch["target"].float()         # (B, H, W)
-        current = batch["input"][:, 0].float()    # (B, H, W)
+        logits = prediction_to_logits(prediction).float()
+        if logits.ndim == 4 and logits.shape[1] == 1:
+            logits = logits.squeeze(1)
+
+        targets = batch.get("target_occupancy", batch["target"]).float()
+        if "current_occupancy" in batch:
+            current = batch["current_occupancy"].float()
+        else:
+            current = batch["input"][:, 0].float()
 
         probs       = torch.sigmoid(logits)
         pred_mask   = probs   > 0.5
@@ -122,6 +144,74 @@ class EulerianMetrics:
             "changed_mse":        s["changed_pred_sse"]  / cp,
             "changed_copy_mse":   s["changed_copy_sse"]  / cp,
             "changed_pixel_frac": s["changed_pixels"]    / max(1, s["total_pixels"]),
+        }
+        self.reset()
+        return result
+
+
+class LagrangianMetrics:
+    """Accumulates masked particle-space metrics for Lagrangian models."""
+
+    MOVE_THRESHOLD = 1e-4
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self._s = dict(
+            pred_sse=0.0,
+            copy_sse=0.0,
+            dof=0,
+            changed_pred_sse=0.0,
+            changed_copy_sse=0.0,
+            changed_dof=0,
+            changed_particles=0,
+            valid_particles=0,
+            n=0,
+        )
+
+    @torch.no_grad()
+    def update(self, prediction: torch.Tensor | ModelOutput, batch: LagrangianBatch):
+        pred = prediction_to_logits(prediction).float()           # (B, N, 3)
+        s_cur = batch["s_cur"].float()                           # (B, N, 3)
+        target = batch.get("target_particles", batch["target"]).float()
+
+        if "particle_nums" in batch:
+            n_max = pred.shape[1]
+            valid = (
+                torch.arange(n_max, device=pred.device)[None, :]
+                < batch["particle_nums"].long()[:, None]
+            )
+        else:
+            valid = torch.ones(pred.shape[:2], dtype=torch.bool, device=pred.device)
+
+        changed = ((target - s_cur).norm(dim=-1) > self.MOVE_THRESHOLD) & valid
+
+        pred_sq = (pred - target).pow(2).sum(dim=-1)
+        copy_sq = (s_cur - target).pow(2).sum(dim=-1)
+
+        s = self._s
+        s["pred_sse"] += (pred_sq * valid).sum().item()
+        s["copy_sse"] += (copy_sq * valid).sum().item()
+        s["dof"] += int(valid.sum().item()) * pred.shape[-1]
+
+        s["changed_pred_sse"] += (pred_sq * changed).sum().item()
+        s["changed_copy_sse"] += (copy_sq * changed).sum().item()
+        s["changed_dof"] += int(changed.sum().item()) * pred.shape[-1]
+        s["changed_particles"] += int(changed.sum().item())
+        s["valid_particles"] += int(valid.sum().item())
+        s["n"] += pred.shape[0]
+
+    def compute(self) -> dict[str, float]:
+        s = self._s
+        dof = max(1, s["dof"])
+        changed_dof = max(1, s["changed_dof"])
+        result = {
+            "particle_mse": s["pred_sse"] / dof,
+            "copy_mse": s["copy_sse"] / dof,
+            "changed_mse": s["changed_pred_sse"] / changed_dof,
+            "changed_copy_mse": s["changed_copy_sse"] / changed_dof,
+            "changed_particle_frac": s["changed_particles"] / max(1, s["valid_particles"]),
         }
         self.reset()
         return result

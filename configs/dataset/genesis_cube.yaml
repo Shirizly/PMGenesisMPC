@@ -16,8 +16,12 @@ val_pct:  5
 test_pct: 5
 
 resolution_scale:      1.0
-include_sweep_removed: false
 include_physics:       true
+
+transforms:
+  - type: ensure_representation
+    representation: eulerian
+  - type: eulerian_aliases
 
 physics:
   normalization:

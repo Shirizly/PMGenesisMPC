@@ -36,6 +36,14 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 
+from training.types import (
+    EulerianBatch,
+    LagrangianBatch,
+    ModelOutput,
+    TrainingBatch,
+    prediction_to_logits,
+)
+
 _LOSS_REGISTRY: dict[str, Callable[[dict], "LossFn"]] = {}
 
 
@@ -77,7 +85,7 @@ class LossFn:
     """
 
     def __call__(
-        self, prediction: torch.Tensor, batch: dict
+        self, prediction: torch.Tensor | ModelOutput, batch: TrainingBatch
     ) -> tuple[torch.Tensor, dict]:
         raise NotImplementedError
 
@@ -130,13 +138,18 @@ class EulerianCombinedLoss(LossFn):
 
     def __call__(
         self,
-        prediction: torch.Tensor,   # (B, 1, H, W) raw logit, float32
-        batch: dict,
+        prediction: torch.Tensor | ModelOutput,
+        batch: EulerianBatch,
     ) -> tuple[torch.Tensor, dict]:
-        prediction = prediction.float()
-        logits  = prediction.squeeze(1)               # (B, H, W)
-        targets = batch["target"].float()             # (B, H, W)
-        current = batch["input"][:, 0].float()        # (B, H, W)
+        logits = prediction_to_logits(prediction).float()
+        if logits.ndim == 4 and logits.shape[1] == 1:
+            logits = logits.squeeze(1)
+
+        targets = batch.get("target_occupancy", batch["target"]).float()
+        if "current_occupancy" in batch:
+            current = batch["current_occupancy"].float()
+        else:
+            current = batch["input"][:, 0].float()
         dev     = logits.device
 
         probs = torch.sigmoid(logits)
@@ -188,6 +201,33 @@ class EulerianCombinedLoss(LossFn):
             "remove":    remove_loss.item(),
         }
         return total, components
+
+
+@register_loss("lagrangian_mse")
+class LagrangianMSELoss(LossFn):
+    """Masked position MSE for particle-based dynamics models."""
+
+    def __call__(
+        self,
+        prediction: torch.Tensor | ModelOutput,
+        batch: LagrangianBatch,
+    ) -> tuple[torch.Tensor, dict]:
+        pred = prediction_to_logits(prediction).float()  # (B, N, 3)
+        target = batch.get("target_particles", batch["target"]).float()
+
+        if "particle_nums" in batch:
+            n_max = pred.shape[1]
+            mask = (
+                torch.arange(n_max, device=pred.device)[None, :]
+                < batch["particle_nums"].long()[:, None]
+            )
+            sq = (pred - target).pow(2).sum(dim=-1)
+            denom = (mask.sum().clamp_min(1) * pred.shape[-1]).float()
+            mse = (sq * mask).sum() / denom
+        else:
+            mse = F.mse_loss(pred, target)
+
+        return mse, {"mse": float(mse.item())}
 
 
 def _soft_dice_loss(

@@ -37,6 +37,8 @@ from typing import Callable
 import torch
 import torch.nn as nn
 
+from training.types import TrainingBatch, ModelOutput
+
 _REGISTRY: dict[str, Callable[[dict], "ModelTrainingWrapper"]] = {}
 
 
@@ -96,7 +98,7 @@ class ModelTrainingWrapper(nn.Module):
         self.model = model
         self.uses_physics = uses_physics
 
-    def forward(self, batch: dict) -> torch.Tensor:
+    def forward(self, batch: TrainingBatch) -> torch.Tensor | ModelOutput:
         raise NotImplementedError
 
     def state_dict(self, **kwargs):
@@ -126,7 +128,7 @@ class EulerianTrainingWrapper(ModelTrainingWrapper):
     metrics apply it as needed so that BCEWithLogitsLoss receives the raw logit.
     """
 
-    def forward(self, batch: dict) -> torch.Tensor:
+    def forward(self, batch: TrainingBatch) -> torch.Tensor | ModelOutput:
         x = batch["input"]
         if self.uses_physics:
             physics = batch.get("physics")
@@ -138,6 +140,27 @@ class EulerianTrainingWrapper(ModelTrainingWrapper):
                 )
             return self.model(x, physics)
         return self.model(x)
+
+
+class LagrangianTrainingWrapper(ModelTrainingWrapper):
+    """Wraps particle-based models (e.g. PropNetDiffDenModel) for training."""
+
+    def __init__(self, model: nn.Module):
+        super().__init__(model, uses_physics=False)
+
+    def forward(self, batch: TrainingBatch) -> torch.Tensor | ModelOutput:
+        a_cur = batch["a_cur"]
+        s_cur = batch["s_cur"]
+        s_delta = batch["s_delta"]
+        particle_dens = batch["particle_dens"]
+        particle_nums = batch.get("particle_nums")
+        return self.model.predict_one_step(
+            a_cur,
+            s_cur,
+            s_delta,
+            particle_dens,
+            particle_nums=particle_nums,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -186,3 +209,21 @@ def _build_unetfilm_shallow(cfg: dict) -> EulerianTrainingWrapper:
         residual_channel=res_ch,
     )
     return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))
+
+
+@register_model("gnn-propnet")
+def _build_gnn_propnet(cfg: dict) -> LagrangianTrainingWrapper:
+    """PropNetDiffDenModel for Lagrangian particle dynamics training."""
+    from model.gnn_dyn import PropNetDiffDenModel
+
+    model_cfg = {
+        "train": {
+            "particle": {
+                "nf_effect": int(cfg.get("nf_effect", 150)),
+                "add_delta": bool(cfg.get("add_delta", False)),
+                "adj_thresh": float(cfg.get("adj_thresh", 0.08)),
+            }
+        }
+    }
+    model = PropNetDiffDenModel(model_cfg, use_gpu=torch.cuda.is_available())
+    return LagrangianTrainingWrapper(model)

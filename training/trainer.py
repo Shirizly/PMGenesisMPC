@@ -50,8 +50,9 @@ from tqdm import trange
 from registry.model_registry import build_model, ModelTrainingWrapper
 from registry.dataset_registry import build_dataset
 from training.losses import build_loss
-from training.metrics import EulerianMetrics
+from training.metrics import build_metrics
 from model.model_card import ModelCard
+from training.types import TrainingBatch
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -108,7 +109,7 @@ def _resolve_path_includes(cfg: dict, base_dir: Path) -> dict:
 # Batch utilities
 # ---------------------------------------------------------------------------
 
-def _to_device(batch: dict, device: str) -> dict:
+def _to_device(batch: TrainingBatch, device: str) -> TrainingBatch:
     """Move all tensor values in a batch dict to ``device``."""
     return {
         k: v.to(device) if isinstance(v, torch.Tensor) else v
@@ -116,7 +117,7 @@ def _to_device(batch: dict, device: str) -> dict:
     }
 
 
-def _augment_eulerian_batch(batch: dict) -> dict:
+def _augment_eulerian_batch(batch: TrainingBatch) -> TrainingBatch:
     """
     Spatial ×8 augmentation for Eulerian batches: 4 rotations × 2 horizontal flips.
 
@@ -144,7 +145,7 @@ def _augment_eulerian_batch(batch: dict) -> dict:
         xs.extend([xr, xm])
         ts.extend([tr, tm])
 
-    new_batch: dict = {
+    new_batch: TrainingBatch = {
         "input":  torch.cat(xs, dim=0),
         "target": torch.cat(ts, dim=0),
     }
@@ -153,17 +154,25 @@ def _augment_eulerian_batch(batch: dict) -> dict:
     return new_batch
 
 
-# ---------------------------------------------------------------------------
-# Metrics factory (extend here to support new representations)
-# ---------------------------------------------------------------------------
+def _is_eulerian_batch(batch: TrainingBatch) -> bool:
+    return ("input" in batch) and ("target" in batch)
 
-def _build_metrics(model_type: str):
-    """Return the right metrics object for a given model type."""
-    # Eulerian models
-    if model_type in ("unetfilm", "unetfilm-shallow"):
-        return EulerianMetrics()
-    # GNN / future representations: add branches here
-    return EulerianMetrics()   # safe fallback
+
+def _batch_size(batch: TrainingBatch) -> int:
+    """Infer batch size from the first present tensor key."""
+    for key in (
+        "input",
+        "target",
+        "s_cur",
+        "target_particles",
+        "particles",
+        "a_cur",
+        "particle_nums",
+    ):
+        tensor = batch.get(key)
+        if isinstance(tensor, torch.Tensor) and tensor.ndim > 0:
+            return int(tensor.shape[0])
+    raise KeyError("Cannot infer batch size from batch keys.")
 
 
 # ---------------------------------------------------------------------------
@@ -227,9 +236,10 @@ class Trainer:
         cfg["_config_path"] = str(Path(config_path).resolve())
 
         model_wrapper = build_model(cfg["model"])
-        loss_cfg      = cfg["training"].get("loss", {"type": "eulerian_combined"})
+        default_loss_type = "lagrangian_mse" if cfg["model"]["type"] == "gnn-propnet" else "eulerian_combined"
+        loss_cfg      = cfg["training"].get("loss", {"type": default_loss_type})
         loss_fn       = build_loss(loss_cfg)
-        metrics       = _build_metrics(cfg["model"]["type"])
+        metrics       = build_metrics(cfg["model"]["type"])
 
         train_ds = build_dataset(cfg["dataset"], "train")
         val_ds   = build_dataset(cfg["dataset"], "val")
@@ -296,13 +306,13 @@ class Trainer:
 
                 for batch in train_loader:
                     batch = _to_device(batch, DEVICE)
-                    if augment:
+                    if augment and _is_eulerian_batch(batch):
                         batch = _augment_eulerian_batch(batch)
 
                     optimizer.zero_grad(set_to_none=True)
                     with torch.amp.autocast(device_type=DEVICE, dtype=torch.bfloat16, enabled=(DEVICE == "cuda")):
                         prediction = self.model_wrapper(batch)
-                        loss, components = self.loss_fn(prediction.float(), batch)
+                        loss, components = self.loss_fn(prediction, batch)
 
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
@@ -314,7 +324,7 @@ class Trainer:
                     scaler.step(optimizer)
                     scaler.update()
 
-                    bsz = batch["input"].size(0)
+                    bsz = _batch_size(batch)
                     train_loss_sum += loss.item() * bsz
                     for k, v in components.items():
                         train_comp_sum[k] = train_comp_sum.get(k, 0.0) + v * bsz
@@ -400,8 +410,8 @@ class Trainer:
             for batch in loader:
                 batch      = _to_device(batch, DEVICE)
                 prediction = self.model_wrapper(batch)
-                loss, comps = self.loss_fn(prediction.float(), batch)
-                bsz = batch["input"].size(0)
+                loss, comps = self.loss_fn(prediction, batch)
+                bsz = _batch_size(batch)
                 loss_sum += loss.item() * bsz
                 for k, v in comps.items():
                     comp_sum[k] = comp_sum.get(k, 0.0) + v * bsz

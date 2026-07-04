@@ -92,8 +92,8 @@ def _run_eval_only(cfg: dict, args) -> None:
     from registry.model_registry import build_model
     from registry.dataset_registry import build_dataset
     from training.losses import build_loss
-    from training.metrics import EulerianMetrics
-    from training.trainer import _to_device, DEVICE
+    from training.metrics import build_metrics
+    from training.trainer import _to_device, _batch_size, DEVICE
 
     model_wrapper = build_model(cfg["model"])
 
@@ -109,8 +109,9 @@ def _run_eval_only(cfg: dict, args) -> None:
     model_wrapper.eval()
 
     test_ds  = build_dataset(cfg["dataset"], "test")
-    loss_fn  = build_loss(cfg["training"].get("loss", {}))
-    metrics  = EulerianMetrics()
+    default_loss_type = "lagrangian_mse" if cfg["model"]["type"] == "gnn-propnet" else "eulerian_combined"
+    loss_fn  = build_loss(cfg["training"].get("loss", {"type": default_loss_type}))
+    metrics  = build_metrics(cfg["model"]["type"])
 
     loader = torch.utils.data.DataLoader(
         test_ds,
@@ -128,8 +129,8 @@ def _run_eval_only(cfg: dict, args) -> None:
         for batch in loader:
             batch      = _to_device(batch, DEVICE)
             prediction = model_wrapper(batch)
-            loss, comps = loss_fn(prediction.float(), batch)
-            bsz = batch["input"].size(0)
+            loss, comps = loss_fn(prediction, batch)
+            bsz = _batch_size(batch)
             loss_sum += loss.item() * bsz
             for k, v in comps.items():
                 comp_sum[k] = comp_sum.get(k, 0.0) + v * bsz

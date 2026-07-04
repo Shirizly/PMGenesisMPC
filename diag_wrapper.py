@@ -40,7 +40,7 @@ from utils import load_yaml
 
 print("=" * 60)
 print("Loading dataset sample…")
-ds = PileSweepData([DATA_FOLDER], split=None)
+ds = PileSweepData([DATA_FOLDER], split="train")
 print(f"  dataset size: {len(ds)} samples")
 
 (input_grid, physics), output_grid = ds[0]

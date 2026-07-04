@@ -135,8 +135,8 @@ def convert_vector_to_grid(
 
     ds = PileSweepData(
         paths=[str(run_folder)],
+        split="train",
         resolution_scale=1.0,
-        include_sweep_removed=False,
     )
 
     for idx in range(len(ds)):
@@ -268,8 +268,8 @@ def visualize_run(
 
         ds = PileSweepData(
             paths=[str(run_path)],
+            split="train",
             resolution_scale=1.0,
-            include_sweep_removed=False,
         )
 
         for i in range(len(ds)):

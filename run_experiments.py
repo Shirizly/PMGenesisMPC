@@ -35,6 +35,7 @@ import time
 import json
 import shutil
 import argparse
+from pathlib import Path
 import yaml
 
 import numpy as np
@@ -63,7 +64,6 @@ from utils import (
     pcd2pix,
 )
 from env.genesis_env import GenesisEnv
-from model.gnn_dyn import PropNetDiffDenModel
 from model.model_card import load_model_from_card
 from simple_mpc import run_simple_mpc
 from simple_mpc.benchmark import benchmark_push_throughput
@@ -101,23 +101,86 @@ def apply_overrides(base_cfg: dict, overrides: dict) -> dict:
 _model_cache: dict = {}   # cache key includes all model-selection knobs → model
 
 
-def _cache_key(model_spec: dict) -> tuple:
-    """Build a cache key that uniquely identifies the requested model variant.
-
-    Important: Eulerian heuristic models can share folder/iter settings while
-    differing in ``heuristic_type`` (e.g. splat vs spread). If that field is
-    omitted from the key, different experiments can accidentally reuse the same
-    cached model instance and produce identical trajectories/rewards.
-    """
+def _cache_key(model_spec: dict, card_path: str | None = None) -> tuple:
+    """Build a cache key for model-card or heuristic loading."""
+    mode = "heuristic" if card_path is None else "model_card"
     return (
-        model_spec.get('type', 'gnn').lower(),
-        model_spec.get('folder', ''),
-        model_spec.get('iter_num', -1),
-        bool(model_spec.get('need_weights', True)),
+        mode,
+        str(card_path or ""),
+        model_spec.get('type', '').lower(),
         str(model_spec.get('heuristic_type', '')).lower(),
         int(model_spec.get('grid_n', -1)),
-        str(model_spec.get('weights_path', '')),
+        json.dumps(model_spec.get('inference_overrides', {}), sort_keys=True),
     )
+
+
+def _resolve_model_card_path(model_spec: dict) -> str:
+    """Resolve model card path from explicit card path or training config."""
+    if "model_card" in model_spec:
+        return str(model_spec["model_card"])
+
+    training_cfg_path = model_spec.get("training_config")
+    if training_cfg_path is None:
+        raise ValueError(
+            "Model spec must include either 'model_card' or 'training_config'. "
+            "For non-trained baselines use type='eulerian-heuristic'."
+        )
+
+    from training.trainer import load_config
+
+    train_cfg = load_config(Path(training_cfg_path))
+    for dotkey, value in model_spec.get("training_overrides", {}).items():
+        _deep_set(train_cfg, dotkey, value)
+
+    log_dir = Path(train_cfg["output"]["log_dir"])
+    return str(log_dir / "model_card.yaml")
+
+
+def _build_eulerian_heuristic(model_spec: dict, cfg: dict, env):
+    """Create an explicit heuristic Eulerian model (no learned weights)."""
+    from model.eulerian_wrapper import (
+        EulerianModelWrapper,
+        FluidPushModel,
+        SplatPushModel,
+        SpreadPushModel,
+    )
+
+    if env is None:
+        raise ValueError(
+            "Eulerian heuristic model requires env for cam_extrinsic "
+            "(needed by forward pass to convert world-space actions to grid coords)"
+        )
+
+    heuristic_type = model_spec.get("heuristic_type", "spread").lower()
+    if heuristic_type == "splat":
+        push_model = SplatPushModel(width=5.0, sigma=0.5)
+    elif heuristic_type == "fluid":
+        push_model = FluidPushModel(
+            width=5.0,
+            sigma=1.5,
+            n_steps=20,
+            decay=0.95,
+            media_sharpness=5.0,
+            blur_sigma=1.0,
+        )
+    elif heuristic_type == "spread":
+        push_model = SpreadPushModel(width=5.0, sigma=0.5)
+    else:
+        raise ValueError(f"Unknown heuristic_type: {heuristic_type!r}")
+
+    bounds = EulerianModelWrapper.default_bounds(cfg, convention="genesis")
+    grid_n = int(model_spec.get("grid_n", 64))
+    cam_extrinsic = env.get_cam_extrinsics()
+    global_scale = cfg["dataset"]["global_scale"]
+    model = EulerianModelWrapper(
+        push_model,
+        bounds,
+        (grid_n, grid_n),
+        cam_extrinsic,
+        global_scale,
+        action_convention="genesis",
+    )
+    return model.cuda() if hasattr(model, "cuda") else model
 
 
 def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False):
@@ -126,252 +189,43 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
 
     model_spec keys
     ---------------
-    type        : 'gnn' | 'eulerian' | 'unetfilm' | 'unetfilm-shallow'
-                  OR set ``model_card`` to a path and this key is auto-detected.
-    model_card  : path to a model_card.yaml file (new framework).  When present
-                  all other keys are ignored and the model is loaded via
-                  ``model.model_card.load_model_from_card``.
-    folder      : checkpoint directory.
-    iter_num    : -1  → load ``net_best.pth``
-                  N   → load ``net_epoch_0_iter_N.pth``
-    need_weights: bool, default True. If False, skip weight loading (for heuristic models).
-    heuristic_type: for Eulerian heuristics, one of 'splat'|'fluid'|'spread' (default 'spread').
+    type               : 'eulerian-heuristic' for non-trained baselines.
+                         If omitted, model-card loading is used.
+    model_card         : explicit path to model_card.yaml (preferred).
+    training_config    : path to configs/training/*.yaml; resolves
+                         output.log_dir/model_card.yaml.
+    training_overrides : optional dot-key overrides applied before resolving
+                         model_card from training_config.
+    inference_overrides: optional overrides merged into cfg['dataset'] before
+                         calling load_model_from_card.
+    heuristic_type     : for eulerian-heuristic, one of 'splat'|'fluid'|'spread'.
+    grid_n             : for eulerian-heuristic, occupancy grid size.
     """
-    # ── New framework: load via model card ────────────────────────────────────
-    if "model_card" in model_spec:
-        card_path = model_spec["model_card"]
-        key = ("model_card", str(card_path))
+    mtype = model_spec.get("type", "").lower()
+    is_heuristic = (
+        mtype == "eulerian-heuristic"
+        or (mtype == "eulerian" and not model_spec.get("need_weights", True) and "model_card" not in model_spec and "training_config" not in model_spec)
+    )
+
+    if is_heuristic:
+        key = _cache_key(model_spec, card_path=None)
         if not force_reload and key in _model_cache:
             print(f"    [model cache hit]  {key}")
             return _model_cache[key]
-        print(f"    Loading model from card: {card_path}")
-        model = load_model_from_card(card_path, env=env, mpc_cfg=cfg.get("dataset"))
+        model = _build_eulerian_heuristic(model_spec, cfg, env)
         _model_cache[key] = model
         return model
 
-    key = _cache_key(model_spec)
+    card_path = _resolve_model_card_path(model_spec)
+    key = _cache_key(model_spec, card_path=card_path)
     if not force_reload and key in _model_cache:
         print(f"    [model cache hit]  {key}")
         return _model_cache[key]
 
-    mtype       = model_spec.get('type', 'gnn').lower()
-    folder      = model_spec.get('folder', cfg['mpc'].get('model_folder', ''))
-    iter_num    = model_spec.get('iter_num', cfg['mpc'].get('iter_num', -1))
-    need_weights = model_spec.get('need_weights', True)
-
-    # Resolve relative paths
-    if not os.path.isabs(folder):
-        root = 'data/gnn_dyn_model' if mtype == 'gnn' else 'data/eulerian_model'
-        folder = os.path.join(root, folder)
-
-    ckpt = (os.path.join(folder, 'net_best.pth') if iter_num == -1
-            else os.path.join(folder, f'net_epoch_0_iter_{iter_num}.pth'))
-
-    if mtype == 'gnn':
-        model = PropNetDiffDenModel(cfg, True)
-        if need_weights:
-            print(f"    Loading GNN from {ckpt}")
-            model.load_state_dict(torch.load(ckpt), strict=False)
-        else:
-            print(f"    Initializing GNN (heuristic, no weights)")
-        model = model.cuda()
-
-    elif mtype == 'eulerian':
-        from model.eulerian_wrapper import (
-            EulerianModelWrapper, SplatPushModel, FluidPushModel, SpreadPushModel
-        )
-        
-        # env is always required: cam_extrinsic is needed by forward() for
-        # action-to-grid conversion, regardless of whether weights are loaded.
-        if env is None:
-            raise ValueError(
-                "Eulerian model requires env for cam_extrinsic "
-                "(used in forward pass to convert world-space actions to grid coords)"
-            )
-        
-        heuristic_type = model_spec.get('heuristic_type', 'spread').lower()
-        
-        # Create the appropriate push model heuristic
-        if heuristic_type == 'splat':
-            push_model = SplatPushModel(width=5.0, sigma=0.5)
-        elif heuristic_type == 'fluid':
-            push_model = FluidPushModel(
-                width=5.0, sigma=1.5, n_steps=20, decay=0.95,
-                media_sharpness=5.0, blur_sigma=1.0
-            )
-        elif heuristic_type == 'spread':
-            push_model = SpreadPushModel(width=5.0, sigma=0.5)
-        else:
-            raise ValueError(f"Unknown heuristic_type: {heuristic_type!r}")
-        
-        # Get bounds and grid resolution
-        bounds = EulerianModelWrapper.default_bounds(cfg, convention='genesis')
-        grid_n   = int(model_spec.get('grid_n', 64))
-        grid_res = (grid_n, grid_n)
-        
-        # For heuristic-only models (need_weights=False), skip cam_extrinsic
-        # For learned models, get it from env
-        # cam_extrinsic is always required: EulerianModelWrapper.forward() calls
-        # _action_to_cam_3d(action, self.cam_extrinsic, ...) on every predict
-        # step to convert world-space actions to camera-space grid coords.
-        # Using np.eye(4) here causes the model to interpret actions in the
-        # wrong coordinate frame, producing predictions that don't match what
-        # the simulator actually executes — even for heuristic (no-weight) models.
-        if env is None:
-            raise ValueError(
-                "Eulerian model requires env parameter for cam_extrinsic "
-                "(needed by forward pass to convert world-space actions to grid coords)"
-            )
-        cam_extrinsic = env.get_cam_extrinsics()
-        global_scale = cfg['dataset']['global_scale']
-        model = EulerianModelWrapper(push_model, bounds, grid_res, cam_extrinsic, global_scale,
-                                     action_convention='genesis')
-
-        if need_weights:
-            print(f"    Loading Eulerian ({heuristic_type}) from {ckpt}")
-            if hasattr(model, 'load'):
-                model.load(ckpt)
-            else:
-                model.load_state_dict(torch.load(ckpt))
-        else:
-            print(f"    Initializing Eulerian heuristic model ({heuristic_type})")
-        
-        if hasattr(model, 'cuda'):
-            model = model.cuda()
-
-    elif mtype == 'unetfilm':
-        # from GranularDynamics2.myClasses.UNetModels_conditioned import UNetFiLM
-        from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM as UNetFiLM
-        from model.eulerian_wrapper import EulerianModelWrapper, UNetFiLMPushModel
-
-        if env is None:
-            raise ValueError("UNetFiLM model requires env for cam_extrinsic")
-
-        weights_path = model_spec.get('weights_path', '')
-        if not weights_path:
-            raise ValueError("'weights_path' is required in model_spec for UNetFiLM")
-
-        # Physics parameters normalised to [0,1] — matching PileSweepData._det_physics:
-        #   friction    → (x - 0.05) / (0.50 - 0.05)
-        #   density     → (x -  750) / (5000 -  750)
-        #   box_friction→ (x - 0.05) / (0.50 - 0.05)
-        _f  = cfg['dataset'].get('particle_friction', 0.05)
-        _d  = cfg['dataset'].get('particle_density',  750.0)
-        _bf = cfg['dataset'].get('box_friction',       0.05)
-        physics_vec = torch.tensor([
-            (_f  - 0.05) / (0.50 - 0.05),
-            (_d  -  750) / (5000 -  750),
-            (_bf - 0.05) / (0.50 - 0.05),
-        ], dtype=torch.float32)
-
-        # Grid resolution: default 1 px/mm, overridable via model_spec['grid_n']
-        box_full_m     = cfg['dataset']['wkspc_w'] * 2   # full box width in metres
-        default_grid_n = round(box_full_m * 1000)         # e.g. 128 for a 128 mm box
-        grid_n         = int(model_spec.get('grid_n', default_grid_n))
-        grid_res       = (grid_n, grid_n)
-
-        # Plate dimensions in grid pixels
-        plate_L_m  = cfg['dataset'].get('plate_length', 0.04)
-        plate_W_m  = cfg['dataset'].get('plate_width',  0.002)
-        px_per_m   = grid_n / box_full_m
-        plate_L_px = plate_L_m * px_per_m
-        plate_W_px = plate_W_m * px_per_m
-
-        # Instantiate UNetFiLM
-        physics_dim = model_spec.get('physics_dim', 3)
-        unet = UNetFiLM(in_channels=2, out_channels=1, cond_dim=physics_dim)
-        print(f"    Loading UNetFiLM from {weights_path}")
-        unet.load_state_dict(torch.load(weights_path, map_location='cuda' if torch.cuda.is_available() else 'cpu'))
-        unet.eval()
-
-        push_model = UNetFiLMPushModel(
-            unet_film=unet,
-            physics=physics_vec,
-            grid_size=grid_res,
-            plate_length_px=plate_L_px,
-            plate_width_px=plate_W_px,
-        )
-
-        bounds        = UNetFiLMPushModel.default_bounds(cfg)
-        cam_extrinsic = env.get_cam_extrinsics()
-        global_scale  = cfg['dataset']['global_scale']
-        model = EulerianModelWrapper(
-            push_model, bounds, grid_res, cam_extrinsic, global_scale,
-            action_convention='genesis',
-        )
-        print(f"    UNetFiLM ready: grid={grid_res}, "
-              f"plate={plate_L_px:.1f}×{plate_W_px:.1f}px, physics={physics_vec.tolist()}")
-
-        if hasattr(model, 'cuda'):
-            model = model.cuda()
-
-    elif mtype == 'unetfilm-shallow':
-        # from GranularDynamics2.myClasses.UNetModels_conditioned import UNetFiLM
-        from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLMShallow as UNetFiLM
-        from model.eulerian_wrapper import EulerianModelWrapper, UNetFiLMPushModel
-
-        if env is None:
-            raise ValueError("UNetFiLM model requires env for cam_extrinsic")
-
-        weights_path = model_spec.get('weights_path', '')
-        if not weights_path:
-            raise ValueError("'weights_path' is required in model_spec for UNetFiLM")
-
-        # Physics parameters normalised to [0,1] — matching PileSweepData._det_physics.
-        _f  = cfg['dataset'].get('particle_friction', 0.05)
-        _d  = cfg['dataset'].get('particle_density',  750.0)
-        _bf = cfg['dataset'].get('box_friction',       0.05)
-        physics_vec = torch.tensor([
-            (_f  - 0.05) / (0.50 - 0.05),
-            (_d  -  750) / (5000 -  750),
-            (_bf - 0.05) / (0.50 - 0.05),
-        ], dtype=torch.float32)
-
-        # Grid resolution: default 1 px/mm, overridable via model_spec['grid_n']
-        box_full_m     = cfg['dataset']['wkspc_w'] * 2   # full box width in metres
-        default_grid_n = round(box_full_m * 1000)         # e.g. 128 for a 128 mm box
-        grid_n         = int(model_spec.get('grid_n', default_grid_n))
-        grid_res       = (grid_n, grid_n)
-
-        # Plate dimensions in grid pixels
-        plate_L_m  = cfg['dataset'].get('plate_length', 0.04)
-        plate_W_m  = cfg['dataset'].get('plate_width',  0.002)
-        px_per_m   = grid_n / box_full_m
-        plate_L_px = plate_L_m * px_per_m
-        plate_W_px = plate_W_m * px_per_m
-
-        # Instantiate UNetFiLM
-        physics_dim = model_spec.get('physics_dim', 3)
-        unet = UNetFiLM(in_channels=2, out_channels=1, cond_dim=physics_dim)
-        print(f"    Loading UNetFiLM from {weights_path}")
-        unet.load_state_dict(torch.load(weights_path, map_location='cuda' if torch.cuda.is_available() else 'cpu'))
-        unet.eval()
-
-        push_model = UNetFiLMPushModel(
-            unet_film=unet,
-            physics=physics_vec,
-            grid_size=grid_res,
-            plate_length_px=plate_L_px,
-            plate_width_px=plate_W_px,
-        )
-
-        bounds        = UNetFiLMPushModel.default_bounds(cfg)
-        cam_extrinsic = env.get_cam_extrinsics()
-        global_scale  = cfg['dataset']['global_scale']
-        model = EulerianModelWrapper(
-            push_model, bounds, grid_res, cam_extrinsic, global_scale,
-            action_convention='genesis',
-        )
-        print(f"    UNetFiLM ready: grid={grid_res}, "
-              f"plate={plate_L_px:.1f}×{plate_W_px:.1f}px, physics={physics_vec.tolist()}")
-
-        if hasattr(model, 'cuda'):
-            model = model.cuda() if torch.cuda.is_available() else model
-
-    else:
-        raise ValueError(
-            f"Unknown model type '{mtype}'. Supported: 'gnn', 'eulerian', 'unetfilm'."
-        )
+    print(f"    Loading model from card: {card_path}")
+    inference_overrides = dict(cfg.get("dataset", {}))
+    inference_overrides.update(model_spec.get("inference_overrides", {}))
+    model = load_model_from_card(card_path, env=env, mpc_cfg=inference_overrides)
 
     _model_cache[key] = model
     return model
@@ -1115,12 +969,8 @@ def run_experiment(
     # Build the effective config for this experiment
     cfg = apply_overrides(base_cfg, overrides)
 
-    # Propagate model folder / iter_num into cfg so the adapter can read them
+    # Model loading is driven by model cards (or explicit eulerian heuristics).
     model_spec = exp_spec.get('model', {})
-    if 'folder' in model_spec:
-        _deep_set(cfg, 'mpc.model_folder', model_spec['folder'])
-    if 'iter_num' in model_spec:
-        _deep_set(cfg, 'mpc.iter_num', model_spec['iter_num'])
 
     os.makedirs(exp_dir, exist_ok=True)
 
@@ -1145,14 +995,10 @@ def run_experiment(
     fpos_file   = episodes_cfg.get('fixed_initial_pos_file', None)
     fixed_pos   = np.load(fpos_file) if fpos_file else None
 
-    # Force-reload Eulerian models when dataset.* keys are overridden: the
-    # EulerianModelWrapper embeds global_scale and cam_extrinsic at construction
-    # time, so a cached instance from a previous experiment would use wrong values.
+    # Force-reload models when dataset.* keys are overridden because inference
+    # geometry and/or normalisation can be embedded in wrapper construction.
     dataset_override = any(k.startswith('dataset.') for k in overrides)
-    force_reload = (
-        dataset_override
-        and model_spec.get('type', 'gnn').lower() == 'eulerian'
-    )
+    force_reload = dataset_override
     model       = load_model(model_spec, cfg, env=env, force_reload=force_reload)
     
     # ── benchmark model throughput (once per experiment) ──────────────────────
@@ -1326,12 +1172,18 @@ def main():
         total_episodes = 0
         for i, exp in enumerate(all_exp_specs):
             n   = exp.get('n_episodes', episodes_cfg.get('n_episodes', 5))
-            mt  = exp.get('model', {}).get('type', '?')
-            mf  = exp.get('model', {}).get('folder', '?')
+            mcfg = exp.get('model', {})
+            mt  = mcfg.get('type', 'model-card')
+            if mt in ('eulerian-heuristic',) or (mt == 'eulerian' and not mcfg.get('need_weights', True) and 'model_card' not in mcfg and 'training_config' not in mcfg):
+                msrc = f"heuristic:{mcfg.get('heuristic_type', 'spread')}"
+            elif 'model_card' in mcfg:
+                msrc = mcfg['model_card']
+            else:
+                msrc = mcfg.get('training_config', '?')
             ovr = exp.get('overrides', {})
             total_episodes += n
             print(f'  {i+1:2d}. {exp["name"]:<30}  '
-                  f'{n:3d} ep  model={mt}/{mf}  '
+                  f'{n:3d} ep  model={mt}/{msrc}  '
                   f'overrides={list(ovr.keys())}')
         print(f'\n  Total: {total_episodes} episodes across {len(all_exp_specs)} experiments')
         return

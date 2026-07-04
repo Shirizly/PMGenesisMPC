@@ -115,13 +115,16 @@ def inspect_test_set(args):
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
     
     resolution_scale = 0.25 if args.model_variant in ("lowres", "shallow-lowres") else 1.0 # low-res models have 0.25 resolution of the original size
-    include_sweep_removed = args.input_mode in ("sweep-removed-input", "sweep-removed-residual")
+    if args.input_mode in ("sweep-removed-input", "sweep-removed-residual"):
+        raise ValueError(
+            "sweep-removed input modes were removed in the cleanup pass. "
+            "Use input_mode='default'."
+        )
     
     dataset = PileSweepData(
         args.data_folders,
         split="test",
         resolution_scale=resolution_scale,
-        include_sweep_removed=include_sweep_removed,
     )
     loader = DataLoader(
         dataset,

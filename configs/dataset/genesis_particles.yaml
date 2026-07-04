@@ -1,0 +1,23 @@
+type: genesis-particles
+paths:
+  - ignore/cube/n10
+
+val_pct: 10
+test_pct: 10
+
+# Gaussian action influence radius in meters for building s_delta.
+# If null, defaults to 0.5 * plate length from each run config.
+action_sigma: null
+
+# Optional split caps for quick experiments.
+max_train_samples: null
+max_val_samples: null
+max_test_samples: null
+
+# Particle models consume raw density via particle_dens.
+include_physics: false
+
+transforms:
+  - type: ensure_representation
+    representation: lagrangian
+  - type: lagrangian_aliases

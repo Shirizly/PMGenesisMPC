@@ -16,6 +16,11 @@ test_pct: 10
 
 include_physics: true
 
+transforms:
+  - type: ensure_representation
+    representation: eulerian
+  - type: eulerian_aliases
+
 physics:
   normalization:
     friction:     {min: 0.05, max: 0.50}
