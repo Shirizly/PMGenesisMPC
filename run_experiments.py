@@ -35,6 +35,7 @@ import time
 import json
 import shutil
 import argparse
+import subprocess
 from pathlib import Path
 import yaml
 
@@ -136,6 +137,57 @@ def _resolve_model_card_path(model_spec: dict) -> str:
     return str(log_dir / "model_card.yaml")
 
 
+def _encode_override_value(value) -> str:
+    """Encode a Python value into a single CLI-safe scalar for KEY=VALUE."""
+    return json.dumps(value)
+
+
+def _train_model_from_spec(model_spec: dict) -> None:
+    """Run unified trainer to produce model_card.yaml for this model spec."""
+    training_cfg_path = model_spec.get("training_config")
+    if training_cfg_path is None:
+        raise ValueError(
+            "train_if_missing=true requires model.training_config in experiment config."
+        )
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "training.train",
+        str(training_cfg_path),
+    ]
+    overrides = model_spec.get("training_overrides", {})
+    if overrides:
+        cmd.append("--override")
+        cmd.extend(
+            f"{k}={_encode_override_value(v)}" for k, v in overrides.items()
+        )
+
+    print("    model_card missing -> running training:")
+    print(f"      {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+
+
+def _ensure_model_card_ready(model_spec: dict) -> str:
+    """Resolve model_card path and optionally train if missing."""
+    card_path = _resolve_model_card_path(model_spec)
+    if Path(card_path).exists():
+        return card_path
+
+    if not bool(model_spec.get("train_if_missing", False)):
+        raise FileNotFoundError(
+            f"Model card not found: {card_path}. "
+            "Set model.train_if_missing=true or provide an existing model_card."
+        )
+
+    _train_model_from_spec(model_spec)
+    if not Path(card_path).exists():
+        raise FileNotFoundError(
+            f"Training finished but model card is still missing: {card_path}"
+        )
+    return card_path
+
+
 def _build_eulerian_heuristic(model_spec: dict, cfg: dict, env):
     """Create an explicit heuristic Eulerian model (no learned weights)."""
     from model.eulerian_wrapper import (
@@ -190,14 +242,15 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
     model_spec keys
     ---------------
     type               : 'eulerian-heuristic' for non-trained baselines.
-                         If omitted, model-card loading is used.
+                         Otherwise model-card loading is used.
     model_card         : explicit path to model_card.yaml (preferred).
-    training_config    : path to configs/training/*.yaml; resolves
+    training_config    : path to configs/training/*.yaml; resolves to
                          output.log_dir/model_card.yaml.
-    training_overrides : optional dot-key overrides applied before resolving
-                         model_card from training_config.
-    inference_overrides: optional overrides merged into cfg['dataset'] before
-                         calling load_model_from_card.
+    training_overrides : dot-key overrides used both for card-path resolution
+                         and optional train-if-missing bootstrap.
+    train_if_missing   : if true and model_card does not exist, runs
+                         `python -m training.train <training_config> ...`.
+    inference_overrides: merged into cfg['dataset'] before load_model_from_card.
     heuristic_type     : for eulerian-heuristic, one of 'splat'|'fluid'|'spread'.
     grid_n             : for eulerian-heuristic, occupancy grid size.
     """
@@ -216,7 +269,7 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
         _model_cache[key] = model
         return model
 
-    card_path = _resolve_model_card_path(model_spec)
+    card_path = _ensure_model_card_ready(model_spec)
     key = _cache_key(model_spec, card_path=card_path)
     if not force_reload and key in _model_cache:
         print(f"    [model cache hit]  {key}")

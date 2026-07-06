@@ -9,3 +9,5 @@ gnn_epoch_*.pth
 stn_epoch_*.pth
 nca_epoch_*.pth
 *.png
+*.jpg
+*.jpeg

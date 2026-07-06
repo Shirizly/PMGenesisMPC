@@ -1,0 +1,9 @@
+# Refactored single-model config for corl_limited cubes training.
+
+type: unetfilm
+
+in_channels: 2
+cond_dim: 3
+uses_physics: true
+input_mode: standard
+residual_channel: 0
