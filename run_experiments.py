@@ -142,32 +142,6 @@ def _encode_override_value(value) -> str:
     return json.dumps(value)
 
 
-def _train_model_from_spec(model_spec: dict) -> None:
-    """Run unified trainer to produce model_card.yaml for this model spec."""
-    training_cfg_path = model_spec.get("training_config")
-    if training_cfg_path is None:
-        raise ValueError(
-            "train_if_missing=true requires model.training_config in experiment config."
-        )
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "training.train",
-        str(training_cfg_path),
-    ]
-    overrides = model_spec.get("training_overrides", {})
-    if overrides:
-        cmd.append("--override")
-        cmd.extend(
-            f"{k}={_encode_override_value(v)}" for k, v in overrides.items()
-        )
-
-    print("    model_card missing -> running training:")
-    print(f"      {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
-
-
 def _ensure_model_card_ready(model_spec: dict) -> str:
     """Resolve model_card path and optionally train if missing."""
     card_path = _resolve_model_card_path(model_spec)
@@ -177,16 +151,9 @@ def _ensure_model_card_ready(model_spec: dict) -> str:
     if not bool(model_spec.get("train_if_missing", False)):
         raise FileNotFoundError(
             f"Model card not found: {card_path}. "
-            "Set model.train_if_missing=true or provide an existing model_card."
-        )
-
-    _train_model_from_spec(model_spec)
-    if not Path(card_path).exists():
-        raise FileNotFoundError(
-            f"Training finished but model card is still missing: {card_path}"
+            "Provide an existing model_card."
         )
     return card_path
-
 
 def _build_eulerian_heuristic(model_spec: dict, cfg: dict, env):
     """Create an explicit heuristic Eulerian model (no learned weights)."""
