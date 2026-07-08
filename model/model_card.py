@@ -177,6 +177,33 @@ class ModelCard:
 # Inference model loader
 # ---------------------------------------------------------------------------
 
+def _load_net(card: ModelCard) -> torch.nn.Module:
+    """Build the card's model via the registry and load its checkpoint."""
+    from registry.model_registry import build_model
+
+    training_wrapper = build_model(card.model_cfg)
+    state = torch.load(card.checkpoint_path, map_location="cpu", weights_only=True)
+    if isinstance(state, dict) and "model_state_dict" in state:
+        training_wrapper.load_state_dict(state["model_state_dict"])
+    else:
+        training_wrapper.load_state_dict(state)
+    net = training_wrapper.model
+    net.eval()
+    return net
+
+
+def load_net_from_card(card_path: str | Path) -> tuple[torch.nn.Module, ModelCard]:
+    """
+    Load the bare underlying network (no MPC wrapper) from a model card.
+
+    Useful for evaluation/visualization scripts that call the network's own
+    forward signature directly.  Returns ``(net, card)`` with the net in
+    eval mode.
+    """
+    card = ModelCard.load(card_path)
+    return _load_net(card), card
+
+
 def load_model_from_card(
     card_path: str | Path,
     env: Any = None,
@@ -210,18 +237,9 @@ def load_model_from_card(
 
 
 def _load_eulerian(card: ModelCard, env: Any, mpc_cfg: dict | None):
-    from registry.model_registry import build_model
     from model.eulerian_wrapper import EulerianModelWrapper, UNetFiLMPushModel
 
-    # --- Build and load weights ---
-    training_wrapper = build_model(card.model_cfg)
-    state = torch.load(card.checkpoint_path, map_location="cpu", weights_only=True)
-    if isinstance(state, dict) and "model_state_dict" in state:
-        training_wrapper.load_state_dict(state["model_state_dict"])
-    else:
-        training_wrapper.load_state_dict(state)
-    unet = training_wrapper.model
-    unet.eval()
+    unet = _load_net(card)
 
     # --- Inference geometry ---
     ic = {**card.inference_cfg, **(mpc_cfg or {})}

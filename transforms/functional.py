@@ -2,21 +2,109 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Tuple
 
 import torch
 
-from model.eulerian_wrapper import _particles_to_occupancy
+
+# ----- coordinate bookkeeping helpers --------------------------------------
+
+def get_grid_axes(ndim: int):
+    """Return the particle-coordinate axes used by the grid.
+
+    For a top-down camera ``depth2fgpcd`` places:
+      dim 0 = camera x  (horizontal, proportional to pixel column)
+      dim 1 = camera y  (horizontal, proportional to pixel row)
+      dim 2 = camera z  (depth, ≈ constant 0.75 for all table particles)
+    So a 2-D top-down grid should span dims 0 and 1, not 0 and 2.
+    """
+    if ndim == 2:
+        return ('x', 'y')   # camera x and y span the horizontal table plane
+    elif ndim == 3:
+        return ('x', 'y', 'z')
+    else:
+        raise ValueError(f"grid_res must have 2 or 3 elements, got {ndim}")
+
+
+def grid_axis_indices(axes):
+    """Map axis names to indices in the 3-D particle coordinate vector."""
+    mapping = {'x': 0, 'y': 1, 'z': 2}
+    return [mapping[a] for a in axes]
+
+
+def _ravel_idx(idx: torch.Tensor, grid_res: Tuple[int, ...]) -> torch.Tensor:
+    """Ravel multi-dim indices (N, ndim) to flat index (N,) for a C-order grid."""
+    strides = torch.tensor(
+        [math.prod(grid_res[k + 1:]) for k in range(len(grid_res))],
+        device=idx.device, dtype=torch.long)
+    return (idx * strides).sum(-1)
+
+
+def _make_grid_coords(grid_res: Tuple[int, ...], device) -> torch.Tensor:
+    """Return a grid of voxel-index coordinates (*grid_res, ndim)."""
+    ranges = [torch.arange(r, device=device, dtype=torch.float32) for r in grid_res]
+    mesh = torch.meshgrid(*ranges, indexing='ij')  # each: (*grid_res)
+    return torch.stack(mesh, dim=-1)               # (*grid_res, ndim)
 
 
 def particles_to_occupancy(
-    particles: torch.Tensor,
+    particles: torch.Tensor,              # (B, N, 3) normalized cam coords
     bounds: Dict[str, float],
     resolution: Tuple[int, ...],
-    sigma: float = 0.0,
+    sigma: float = 0.0,                   # >0 → soft Gaussian splat; 0 → hard voxel
 ) -> torch.Tensor:
-    """Convert particle clouds (B,N,3) to occupancy grids using shared wrapper logic."""
-    return _particles_to_occupancy(particles, bounds, resolution, sigma=sigma)
+    """
+    Convert a batch of particle point-clouds to an occupancy grid.
+
+    Returns
+    -------
+    occ : (B, *resolution)  float32, values in [0, 1].
+    """
+    B, N, _ = particles.shape
+    device = particles.device
+    ndim = len(resolution)
+
+    # Axis names and order: x (grid dim 0), then y / z depending on ndim
+    axes = get_grid_axes(ndim)
+    lo  = torch.tensor([bounds[f'{a}_min'] for a in axes], device=device, dtype=particles.dtype)
+    hi  = torch.tensor([bounds[f'{a}_max'] for a in axes], device=device, dtype=particles.dtype)
+    res = torch.tensor(resolution, device=device, dtype=particles.dtype)
+
+    # Compute the axis index (dim) in the 3-D particle coordinate for each grid axis
+    axis_idx = torch.tensor(grid_axis_indices(axes), device=device, dtype=torch.long)
+
+    # Particle coords projected onto grid axes  (B, N, ndim)
+    pts = particles[..., axis_idx]  # (B, N, ndim)
+
+    # Normalise to [0, resolution-1]
+    pts_norm = (pts - lo) / (hi - lo) * (res - 1)  # (B, N, ndim)
+
+    occ = torch.zeros([B] + list(resolution), device=device, dtype=torch.float32)
+
+    if sigma <= 0.0:
+        # Hard voxel: scatter-add a '1' to each occupied cell
+        idx = pts_norm.round().long().clamp(
+            torch.zeros(ndim, device=device, dtype=torch.long),
+            (res.long() - 1))
+        for b in range(B):
+            flat_idx = _ravel_idx(idx[b], resolution)  # (N,)
+            occ[b].view(-1).scatter_add_(0, flat_idx, torch.ones(N, device=device))
+        # Clamp to [0, 1]
+        occ = occ.clamp(0.0, 1.0)
+    else:
+        # Soft Gaussian splat – expensive but differentiable
+        # Build grid of voxel centres  (*resolution, ndim)
+        grid_pts = _make_grid_coords(resolution, device)  # (*resolution, ndim)  in voxel idx
+        for b in range(B):
+            # pts_norm[b]: (N, ndim), grid_pts: (*resolution, ndim)
+            # dist2: (N, *resolution)
+            diff = pts_norm[b].unsqueeze(1).unsqueeze(1) - grid_pts.unsqueeze(0)  # (N, *resolution, ndim)
+            dist2 = (diff ** 2).sum(-1)             # (N, *resolution)
+            contrib = torch.exp(-dist2 / (2 * sigma ** 2)).sum(0)  # (*resolution)
+            occ[b] = contrib.clamp(0.0, 1.0)
+
+    return occ  # (B, *resolution)
 
 
 def genesis_action_to_cam3d(

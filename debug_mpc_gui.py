@@ -68,8 +68,9 @@ EULERIAN_HEURISTIC    = 'spread'
 TOOL_WIDTH            = 8.0
 ACTION_SIGMA          = 1.5
 
-# For MODEL_TYPE = 'unetfilm' or 'unetfilm-shallow': path to .pth checkpoint
-UNETFILM_WEIGHTS_PATH = 'runs_cubes/nfu_mse_mass2/unet_best.pth'   # e.g. 'runs_cubes/nfu_mse_mass2/unet_best.pth'
+# For MODEL_TYPE = 'unetfilm' or 'unetfilm-shallow': path to a model_card.yaml
+# written by the Trainer (run_experiments.load_model loads via model cards).
+UNETFILM_MODEL_CARD = 'runs_cubes/unetfilm_corl_limited_100e/model_card.yaml'
 
 TILE_SIZE    = 300   # px – size of each heatmap tile
 CANVAS_SIZE  = 380   # px – draggable workspace canvas
@@ -171,15 +172,15 @@ class MPCDebugGUI:
                 'grid_n': 64,
             }
         elif MODEL_TYPE in ('unetfilm', 'unetfilm-shallow'):
-            if not UNETFILM_WEIGHTS_PATH:
+            if not UNETFILM_MODEL_CARD:
                 raise ValueError(
-                    "UNETFILM_WEIGHTS_PATH must be set at the top of debug_mpc_gui.py "
+                    "UNETFILM_MODEL_CARD must be set at the top of debug_mpc_gui.py "
                     "when MODEL_TYPE is 'unetfilm' or 'unetfilm-shallow'."
                 )
             model_spec = {
                 'type': MODEL_TYPE,
                 'need_weights': True,
-                'weights_path': UNETFILM_WEIGHTS_PATH,
+                'model_card': UNETFILM_MODEL_CARD,
             }
         else:
             raise ValueError(f"Unknown MODEL_TYPE: {MODEL_TYPE!r}")

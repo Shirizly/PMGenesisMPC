@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from utils import depth2fgpcd, fps_np
-from model.eulerian_wrapper import _particles_to_occupancy
+from transforms.functional import particles_to_occupancy as _particles_to_occupancy
 from simple_mpc.occupancy_reward import OccupancyReward
 
 # Depth threshold for foreground detection; must match utils.scale_subgoal_to_material_pixels
@@ -304,8 +304,10 @@ class GNNAdapter:
     [sx, sy, ex, ey] is converted into a per-particle displacement field
     (the 'selta' used as GNN input), which is differentiable w.r.t. the action.
 
-    For MPC optimization, uses particle-based reward (config_reward_ptcl),
-    which directly matches the particle state representation and preserves gradients.
+    For MPC optimization, a particle-based reward matching the state
+    representation is intended, but the FlexEnv implementation
+    (config_reward_ptcl) has not been ported to Genesis yet — the 'default'
+    optimization reward raises NotImplementedError (see INTERFACES.md §6).
 
     For reporting/comparison, computes occupancy-based reward from the full raw
     observation (compute_occ_reward_from_obs) so it is on the same scale as the
@@ -336,12 +338,6 @@ class GNNAdapter:
                  device: str = 'cuda',
                  reward_type_opt: str = 'default',
                  reward_type_report: str | None = None):
-        # TBD: GNN reward — requires env.flex_rewards (FlexEnv-specific), not yet ported to Genesis
-        # try:
-        #     from env.flex_rewards import config_reward_ptcl
-        # except ImportError:
-        #     config_reward_ptcl = None  # TBD: replace with Genesis-compatible reward function
-
         self.model_dy      = model_dy
         self.env           = env
         self.cam_params    = cam_params
@@ -350,7 +346,10 @@ class GNNAdapter:
         self.particle_num  = cfg['mpc'].get('particle_num', 50)
         self.pusher_w      = 0.8 / self.global_scale   # matches PlannerGD convention
         self.cam_extrinsic = env.get_cam_extrinsics()  # (4, 4) ndarray — TBD: GenesisEnv returns np.eye(4); genesis action convention does not use extrinsic matrix
-        # self._reward_fn    = config_reward_ptcl
+        # The FlexEnv particle reward (config_reward_ptcl) was never ported to
+        # Genesis, so the 'default' optimization reward is unavailable; see
+        # INTERFACES.md §6.  _reward_default fails loudly instead of silently.
+        self._reward_fn    = None
 
         # particle density — updated each obs_to_state call
         self._particle_dens: float = 1.0
@@ -443,17 +442,11 @@ class GNNAdapter:
 
     def compute_reward(self, state_batch: torch.Tensor) -> torch.Tensor:
         """(n_sample, particle_num, 3) → (n_sample,) reward.
-        
+
         Uses particle-based reward directly, preserving gradients through the
         optimization. This matches the state representation (particles).
         """
-        return self._reward_fn(
-            state_batch,
-            self.goal_t,
-            cam_params=self.cam_params,
-            goal_coor=self.goal_coor_t,
-            normalize=True,
-        )
+        return self._reward_default(state_batch)
 
     def compute_reward_iou(self, state_batch: torch.Tensor) -> torch.Tensor:
         """(n_sample, particle_num, 3) → (n_sample,) IoU reward with goal region.
@@ -495,7 +488,15 @@ class GNNAdapter:
     # ── private reward implementations ─────────────────────────────────────
 
     def _reward_default(self, state_batch: torch.Tensor) -> torch.Tensor:
-        """Default particle-based reward (delegates to config_reward_ptcl)."""
+        """Default particle-based reward (delegates to the ported reward fn)."""
+        if self._reward_fn is None:
+            raise NotImplementedError(
+                "GNNAdapter's default particle reward is not available: the "
+                "FlexEnv config_reward_ptcl function has not been ported to "
+                "Genesis (see INTERFACES.md §6). Use reward_type_report="
+                "'iou'/'eulerian' for reporting, or port a particle reward and "
+                "assign it to self._reward_fn."
+            )
         return self._reward_fn(
             state_batch,
             self.goal_t,

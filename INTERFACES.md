@@ -166,3 +166,10 @@ This section is specific to particle-based models and adapters.
 - Legacy callers can still pass raw tensors; helper conversion utilities should normalize this to the ModelOutput contract.
 - New code should prefer explicit typed contracts in `training/types.py`.
 - Representation-specific losses/metrics should validate required keys early and fail loudly on mismatch.
+
+Known gaps:
+- `GNNAdapter.compute_reward` (the `'default'` particle reward for MPC
+  optimization) is unported: the original FlexEnv `config_reward_ptcl` has no
+  Genesis equivalent yet, so it raises `NotImplementedError`. The `'iou'` and
+  `'eulerian'` reward types remain available for reporting. Lagrangian MPC
+  optimization is blocked until a particle reward is ported.

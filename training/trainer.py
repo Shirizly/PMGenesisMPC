@@ -14,7 +14,7 @@ Config file path references
 ---------------------------
 If a top-level key's value is a string ending in ``.yaml``, the referenced
 file is loaded and its content replaces the string.  Paths are resolved
-relative to the config file's directory::
+against the project root first, then against the config file's directory::
 
     model:   configs/model/unetfilm.yaml    ← loaded and inlined
     dataset: configs/dataset/genesis_cube.yaml

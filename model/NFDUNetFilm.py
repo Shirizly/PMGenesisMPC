@@ -13,6 +13,11 @@ and applied channel-wise after each conv+ReLU block.
 Reference: Perez et al., "FiLM: Visual Reasoning with a General Conditioning Layer", AAAI 2018.
 """
 
+from __future__ import annotations
+
+import re
+from typing import Sequence
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -91,9 +96,31 @@ class FiLMConvBlock(nn.Module):
 # NFD U-Net  with FiLM at every encoder + decoder block (Configurable Depth)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _remap_legacy_state_dict(state_dict: dict) -> dict:
+    """
+    Map pre-configurable checkpoint keys onto the ModuleList layout:
+    ``enc{n}.*`` → ``encoder_blocks.{n-1}.*`` and ``dec{n}.*`` →
+    ``decoder_blocks.{n-1}.*`` (``bottleneck``/``head`` are unchanged).
+    Weight shapes match because the default channel scheme reproduces the
+    original doubling widths.
+    """
+    remapped = {}
+    for key, value in state_dict.items():
+        m = re.match(r"^(enc|dec)(\d+)\.(.+)$", key)
+        if m:
+            prefix = "encoder_blocks" if m.group(1) == "enc" else "decoder_blocks"
+            remapped[f"{prefix}.{int(m.group(2)) - 1}.{m.group(3)}"] = value
+        else:
+            remapped[key] = value
+    return remapped
+
+
 class NFDUNetFiLM(nn.Module):
     """
     NFD dynamics model conditioned on material properties via FiLM, with configurable depth.
+
+    The encoder widths double per level by default (base * 2**i — the original
+    fixed-depth architecture at depth 3), or can be given explicitly.
 
     Args:
         in_channels : input channels  (default 2)
@@ -101,6 +128,8 @@ class NFDUNetFiLM(nn.Module):
         cond_dim    : dimensionality of the property/conditioning vector z
         base        : base channel width (default 8)
         depth       : number of pooling levels (encoder stages). Must be >= 1.
+        channels    : optional explicit per-level encoder widths, e.g.
+                      [8, 16, 32]. Overrides base/depth when given.
         film_hidden : hidden size of each FiLM MLP (default 64)
         residual_channel: which input channel to use as residual skip (default 0)
     """
@@ -111,37 +140,38 @@ class NFDUNetFiLM(nn.Module):
         out_channels: int = 1,
         cond_dim:     int = 3,
         base:         int = 8,
-        depth:        int = 3, # New parameter for depth control (defaulting to original depth)
+        depth:        int = 3,
+        channels:     Sequence[int] | None = None,
         film_hidden:  int = 64,
         residual_channel: int = 0,
     ):
         super().__init__()
-        b = base
         self.residual_channel = residual_channel
-        self.depth = max(1, depth) # Ensure depth is at least 1
+
+        if channels is not None:
+            channels = [int(c) for c in channels]
+            if not channels or any(c < 2 for c in channels):
+                raise ValueError(f"channels must be a non-empty list of ints >= 2, got {channels!r}")
+            self.depth = len(channels)
+        else:
+            self.depth = max(1, depth)
+            channels = [base * 2 ** i for i in range(self.depth)]
+        self.channels = channels
 
         kw = dict(cond_dim=cond_dim, hidden=film_hidden)
 
         # --- Encoder Stages ---
         self.encoder_blocks = nn.ModuleList()
-        skip_channels = [] # Stores (module, output_channels) for each level i=0..depth-1
         current_in_ch = in_channels
-
-        for i in range(self.depth):
-            # Calculate output channels: b * (i + 1) for depth > 1, else just 'b'
-            out_ch = b * (i + 1) if i > 0 else b
-            block = FiLMConvBlock(current_in_ch, out_ch, **kw)
-            self.encoder_blocks.append(block)
-            skip_channels.append((block, out_ch))
+        for out_ch in channels:
+            self.encoder_blocks.append(FiLMConvBlock(current_in_ch, out_ch, **kw))
             current_in_ch = out_ch
 
         # Pool layer is always used after the first encoder stage (i=0) up to depth-2
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # --- Bottleneck Stage ---
-        bottleneck_in_ch = b * self.depth
-        self.bottleneck = FiLMConvBlock(bottleneck_in_ch, bottleneck_in_ch, **kw)
-
+        self.bottleneck = FiLMConvBlock(channels[-1], channels[-1], **kw)
 
         # --- Decoder Stages (Dynamic Construction) ---
         # Built into pre-sized lists indexed by level `i` (not appended) so that
@@ -150,28 +180,19 @@ class NFDUNetFiLM(nn.Module):
         decoder_blocks_by_level = [None] * self.depth
         up_layers_by_level = [None] * self.depth
 
-        prev_out_ch = bottleneck_in_ch  # channel count feeding into the next upsample
+        prev_out_ch = channels[-1]  # channel count feeding into the next upsample
 
         for i in range(self.depth - 1, -1, -1):
             up_layers_by_level[i] = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
 
-            # Input channels for the decoder block: upsampled feature map + skip connection.
-            # up_in_ch is the actual output channel count of whatever feeds this upsample
-            # (the bottleneck for the first level, or the previous decoder block otherwise) -
-            # tracked directly rather than re-derived from a formula.
-            _, skip_out_ch = skip_channels[i]
-            up_in_ch = prev_out_ch
-            decoder_in_ch = up_in_ch + skip_out_ch
+            # Input channels for the decoder block: upsampled feature map (the
+            # bottleneck for the first level, the previous decoder block
+            # otherwise) + the same-level skip connection.
+            decoder_in_ch = prev_out_ch + channels[i]
 
-            # Use the correct output channels for the decoder block (b*2, b, b//2 in original code).
-            # i == 0 (final stage, feeds self.head) is checked first so it always resolves to
-            # b//2 even when depth is small enough that it collides with the first/middle cases.
-            if i == 0: # d1 (final stage, must match self.head's expected input channels)
-                out_ch = b // 2
-            elif i == self.depth - 1: # d3 (first decoder stage, right after the bottleneck)
-                out_ch = b * 2
-            else: # d2 (middle stages)
-                out_ch = b
+            # Decoder width at level i mirrors half the encoder width at that
+            # level — reproduces the original b*2 / b / b//2 scheme at depth 3.
+            out_ch = max(1, channels[i] // 2)
 
             decoder_blocks_by_level[i] = FiLMConvBlock(decoder_in_ch, out_ch, **kw)
             prev_out_ch = out_ch
@@ -179,9 +200,13 @@ class NFDUNetFiLM(nn.Module):
         self.decoder_blocks = nn.ModuleList(decoder_blocks_by_level)
         self.up_layers = nn.ModuleList(up_layers_by_level)
 
-
         # --- Output head (plain 1×1 conv, no FiLM) ───────────────────────────
-        self.head = nn.Conv2d(b//2, out_channels, kernel_size=1)
+        self.head = nn.Conv2d(max(1, channels[0] // 2), out_channels, kernel_size=1)
+
+    def load_state_dict(self, state_dict, strict: bool = True, **kwargs):
+        if any(k.startswith("enc1.") for k in state_dict):
+            state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict, **kwargs)
 
     def forward(
         self,

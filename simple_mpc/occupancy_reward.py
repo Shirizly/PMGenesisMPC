@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from typing import Dict
 
-from model.eulerian_wrapper import _particles_to_occupancy
+from transforms.functional import particles_to_occupancy as _particles_to_occupancy
 
 
 class OccupancyReward:

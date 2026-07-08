@@ -21,7 +21,7 @@ The ``"physics"`` key is absent rather than None so callers can use
 Adding a new dataset
 --------------------
 1.  Write a ``build_<name>_dataset(cfg, split)`` function.
-2.  Register it: ``_DATASET_REGISTRY["myname"] = build_<name>_dataset``.
+2.  Decorate it with ``@register_dataset("myname")``.
 3.  Return a representation wrapper (e.g., ``EulerianDatasetWrapper``) or
     implement a custom wrapper that produces a documented batch dict.
 """
@@ -45,6 +45,14 @@ from transforms.representation import (
 )
 
 _DATASET_REGISTRY: dict[str, Callable[[dict, str], Dataset]] = {}
+
+
+def register_dataset(name: str):
+    """Decorator: ``@register_dataset("genesis")``."""
+    def decorator(factory_fn: Callable[[dict, str], Dataset]):
+        _DATASET_REGISTRY[name] = factory_fn
+        return factory_fn
+    return decorator
 
 
 def build_dataset(cfg: dict, split: str) -> Dataset:
@@ -312,6 +320,7 @@ class GenesisParticlePushDataset(Dataset):
 # Registered factories
 # ---------------------------------------------------------------------------
 
+@register_dataset("genesis")
 def _build_genesis_dataset(cfg: dict, split: str) -> EulerianDatasetWrapper:
     """
     Wrap PileSweepData (Genesis simulation data).
@@ -349,9 +358,7 @@ def _build_genesis_dataset(cfg: dict, split: str) -> EulerianDatasetWrapper:
     )
 
 
-_DATASET_REGISTRY["genesis"] = _build_genesis_dataset
-
-
+@register_dataset("real")
 def _build_real_dataset(cfg: dict, split: str) -> EulerianDatasetWrapper:
     """
     Wrap RealPileSweepData (real-world camera data).
@@ -414,12 +421,10 @@ class _RealEulerianDatasetWrapper(EulerianDatasetWrapper):
         sample: dict = {"input": input_grid, "target": target}
         if self.include_physics:
             sample["physics"] = self.bounds.normalize(raw_physics)
-        return sample
+        return self.transforms(sample)
 
 
-_DATASET_REGISTRY["real"] = _build_real_dataset
-
-
+@register_dataset("genesis-particles")
 def _build_genesis_particles_dataset(cfg: dict, split: str) -> LagrangianDatasetWrapper:
     """Build Lagrangian particle-transition dataset for GNN training."""
     raw = GenesisParticlePushDataset(
@@ -435,6 +440,3 @@ def _build_genesis_particles_dataset(cfg: dict, split: str) -> LagrangianDataset
         include_physics=bool(cfg.get("include_physics", False)),
         transforms_cfg=cfg.get("transforms"),
     )
-
-
-_DATASET_REGISTRY["genesis-particles"] = _build_genesis_particles_dataset

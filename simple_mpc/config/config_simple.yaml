@@ -63,7 +63,7 @@ mpc:
   # ── model selection ───────────────────────────────────────────────────────
   # type: which dynamics model to use as the MPC predictor.
   #   'splat' | 'fluid' | 'spread' — heuristic Eulerian push models (no weights)
-  #   'UNetFiLM'                   — learned model from GranularDynamics2
+  #   'UNetFiLM'                   — learned model (model/NFDUNetFilm.py)
   # weights_path: path to the saved .pth checkpoint (required for UNetFiLM).
   # physics_dim: physics embedding dimension of the UNetFiLM model (default 3).
   model:

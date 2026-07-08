@@ -12,3 +12,7 @@ nca_epoch_*.pth
 *.jpg
 *.jpeg
 *.avi
+
+# Run artifacts (outputs are reproducible from configs)
+outputs/
+mpc_transitions/

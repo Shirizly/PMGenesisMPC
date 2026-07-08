@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from Genesis.training.dataset import PileSweepData
-from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM, NFDUNetFiLMShallow
+from model.NFDUNetFilm import NFDUNetFiLM, NFDUNetFiLMShallow
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -143,6 +143,14 @@ def model_name(path: Path) -> str:
 
 
 def load_model(checkpoint: Path, model_variant: str):
+    # Prefer the model card sidecar (written by the Trainer) so the exact
+    # architecture config is used; fall back to --model-variant construction
+    # for legacy checkpoints without a card.
+    card_path = checkpoint.parent / "model_card.yaml"
+    if card_path.exists():
+        from model.model_card import load_net_from_card
+        model, _ = load_net_from_card(card_path)
+        return model.to(DEVICE)
     model = (NFDUNetFiLMShallow() if model_variant in ("shallow", "shallow-lowres") else NFDUNetFiLM()).to(DEVICE)
     try:
         state_dict = torch.load(checkpoint, map_location=DEVICE, weights_only=True)

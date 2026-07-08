@@ -10,12 +10,12 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from Genesis.training.dataset import PileSweepData
-from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
+from model.NFDUNetFilm import NFDUNetFiLM
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inspect NFDUNetFiLM predictions on the Genesis test split.")
-    parser.add_argument("--checkpoint", type=Path, default=Path("runs_cubes/nfu_mse_mass2_addremove/unet_best.pth"), help="Path to the trained NFDUNetFiLM state dict.",)
+    parser.add_argument("--checkpoint", type=Path, default=Path("runs_cubes/unetfilm_corl_limited_100e/unet_best.pth"), help="Path to the trained NFDUNetFiLM state dict (a model_card.yaml sidecar is used when present).",)
 
     # +++ MODEL SETTINGS +++
     parser.add_argument("--data-folders", nargs="+", default=["corl/cube"])
@@ -104,6 +104,14 @@ def plot_prediction(
 
 
 def load_model(checkpoint_path, device):
+    # Prefer the model card sidecar so the exact trained architecture is
+    # rebuilt via the registry; fall back to default NFDUNetFiLM for legacy
+    # checkpoints without a card.
+    card_path = Path(checkpoint_path).parent / "model_card.yaml"
+    if card_path.exists():
+        from model.model_card import load_net_from_card
+        model, _ = load_net_from_card(card_path)
+        return model.to(device)
     model = NFDUNetFiLM().to(device)
     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)

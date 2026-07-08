@@ -45,7 +45,7 @@ def _raw_pts_from_obs(obs_np: np.ndarray,
 
 # ── public helpers ────────────────────────────────────────────────────────────
 
-def load_simple_config(path: str = 'config/mpc/config_simple.yaml') -> dict:
+def load_simple_config(path: str = 'simple_mpc/config/config_simple.yaml') -> dict:
     """Load the simple-MPC config file."""
     return load_yaml(path)
 

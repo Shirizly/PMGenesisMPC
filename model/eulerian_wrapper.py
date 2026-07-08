@@ -62,63 +62,13 @@ from typing import Sequence, Tuple, Dict, Any
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _particles_to_occupancy(
-    s_cur: torch.Tensor,                  # (B, N, 3) normalized cam coords
-    grid_bounds: Dict[str, float],
-    grid_res: Tuple[int, ...],
-    sigma: float = 0.0,                   # >0 → soft Gaussian splat; 0 → hard voxel
-) -> torch.Tensor:
-    """
-    Convert a batch of particle point-clouds to an occupancy grid.
-
-    Returns
-    -------
-    occ : (B, *grid_res)  float32, values in [0, 1].
-    """
-    B, N, _ = s_cur.shape
-    device = s_cur.device
-    ndim = len(grid_res)
-
-    # Axis names and order: x (grid dim 0), then y / z depending on ndim
-    axes = _get_axes(ndim)
-    lo  = torch.tensor([grid_bounds[f'{a}_min'] for a in axes], device=device, dtype=s_cur.dtype)
-    hi  = torch.tensor([grid_bounds[f'{a}_max'] for a in axes], device=device, dtype=s_cur.dtype)
-    res = torch.tensor(grid_res, device=device, dtype=s_cur.dtype)
-
-    # Compute the axis index (dim) in the 3-D particle coordinate for each grid axis
-    axis_idx = torch.tensor(_axis_indices(axes), device=device, dtype=torch.long)
-
-    # Particle coords projected onto grid axes  (B, N, ndim)
-    pts = s_cur[..., axis_idx]  # (B, N, ndim)
-
-    # Normalise to [0, grid_res-1]
-    pts_norm = (pts - lo) / (hi - lo) * (res - 1)  # (B, N, ndim)
-
-    occ = torch.zeros([B] + list(grid_res), device=device, dtype=torch.float32)
-
-    if sigma <= 0.0:
-        # Hard voxel: scatter-add a '1' to each occupied cell
-        idx = pts_norm.round().long().clamp(
-            torch.zeros(ndim, device=device, dtype=torch.long),
-            (res.long() - 1))
-        for b in range(B):
-            flat_idx = _ravel_idx(idx[b], grid_res)  # (N,)
-            occ[b].view(-1).scatter_add_(0, flat_idx, torch.ones(N, device=device))
-        # Clamp to [0, 1]
-        occ = occ.clamp(0.0, 1.0)
-    else:
-        # Soft Gaussian splat – expensive but differentiable
-        # Build grid of voxel centres  (*grid_res, ndim)
-        grid_pts = _make_grid_coords(grid_res, device)  # (*grid_res, ndim)  in voxel idx
-        for b in range(B):
-            # pts_norm[b]: (N, ndim), grid_pts: (*grid_res, ndim)
-            # dist2: (N, *grid_res)
-            diff = pts_norm[b].unsqueeze(1).unsqueeze(1) - grid_pts.unsqueeze(0)  # (N, *grid_res, ndim)
-            dist2 = (diff ** 2).sum(-1)             # (N, *grid_res)
-            contrib = torch.exp(-dist2 / (2 * sigma ** 2)).sum(0)  # (*grid_res)
-            occ[b] = contrib.clamp(0.0, 1.0)
-
-    return occ  # (B, *grid_res)
+# Canonical implementations live in transforms.functional; the aliases keep
+# this module's historical private names working for existing callers.
+from transforms.functional import (
+    particles_to_occupancy as _particles_to_occupancy,
+    get_grid_axes as _get_axes,
+    grid_axis_indices as _axis_indices,
+)
 
 
 def _occupancy_to_particles(
@@ -276,29 +226,6 @@ def _fps_np(pts: np.ndarray, n: int) -> np.ndarray:
 
 # ----- coordinate bookkeeping helpers --------------------------------------
 
-def _get_axes(ndim: int):
-    """Return the particle-coordinate axes used by the grid.
-
-    For a top-down camera ``depth2fgpcd`` places:
-      dim 0 = camera x  (horizontal, proportional to pixel column)
-      dim 1 = camera y  (horizontal, proportional to pixel row)
-      dim 2 = camera z  (depth, ≈ constant 0.75 for all table particles)
-    So a 2-D top-down grid should span dims 0 and 1, not 0 and 2.
-    """
-    if ndim == 2:
-        return ('x', 'y')   # camera x and y span the horizontal table plane
-    elif ndim == 3:
-        return ('x', 'y', 'z')
-    else:
-        raise ValueError(f"grid_res must have 2 or 3 elements, got {ndim}")
-
-
-def _axis_indices(axes):
-    """Map axis names to indices in the 3-D particle coordinate vector."""
-    mapping = {'x': 0, 'y': 1, 'z': 2}
-    return [mapping[a] for a in axes]
-
-
 def _to_3d(voxel_coords: np.ndarray, axes, depth_fill: float | None) -> np.ndarray:
     """Promote a (M, ndim) grid-coordinate array to (M, 3).
 
@@ -313,21 +240,6 @@ def _to_3d(voxel_coords: np.ndarray, axes, depth_fill: float | None) -> np.ndarr
     if len(axes) == 2 and depth_fill is not None:
         pts[:, 2] = depth_fill   # fill the depth (camera z) axis
     return pts
-
-
-def _ravel_idx(idx: torch.Tensor, grid_res: Tuple[int, ...]) -> torch.Tensor:
-    """Ravel multi-dim indices (N, ndim) to flat index (N,) for a C-order grid."""
-    strides = torch.tensor(
-        [int(np.prod(grid_res[k+1:])) for k in range(len(grid_res))],
-        device=idx.device, dtype=torch.long)
-    return (idx * strides).sum(-1)
-
-
-def _make_grid_coords(grid_res: Tuple[int, ...], device) -> torch.Tensor:
-    """Return a grid of voxel-index coordinates (*grid_res, ndim)."""
-    ranges = [torch.arange(r, device=device, dtype=torch.float32) for r in grid_res]
-    mesh = torch.meshgrid(*ranges, indexing='ij')  # each: (*grid_res)
-    return torch.stack(mesh, dim=-1)               # (*grid_res, ndim)
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +294,7 @@ class EulerianModelWrapper(nn.Module):
         self.user_model       = user_model
         self.grid_bounds      = dict(grid_bounds)
         self.grid_res         = tuple(grid_res)
-        self.cam_extrinsic    = cam_extrinsic.copy()
+        self.cam_extrinsic    = cam_extrinsic.copy() if cam_extrinsic is not None else None
         self.global_scale     = float(global_scale)
         self.splat_sigma      = splat_sigma
         self.occ_threshold    = occ_threshold

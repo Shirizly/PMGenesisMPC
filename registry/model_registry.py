@@ -32,12 +32,13 @@ Adding a new model
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.nn as nn
 
-from training.types import TrainingBatch, ModelOutput
+if TYPE_CHECKING:  # annotation-only; a runtime import would be circular
+    from training.types import TrainingBatch, ModelOutput
 
 _REGISTRY: dict[str, Callable[[dict], "ModelTrainingWrapper"]] = {}
 
@@ -179,18 +180,21 @@ def _build_unetfilm(cfg: dict) -> EulerianTrainingWrapper:
         input_mode:       standard — standard | sweep-removed-input |
                                      sweep-removed-residual
         residual_channel: 0        — which input channel to use as residual skip
-        depth:            3        — number of pooling levels (default is 3)
+        depth:            3        — number of pooling levels; widths double
+                                     per level (8, 16, 32, ...)
+        channels:         null     — explicit per-level widths, e.g. [8, 16, 32];
+                                     overrides depth when given
     """
-    from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
+    from model.NFDUNetFilm import NFDUNetFiLM
     input_mode = cfg.get("input_mode", "standard")
     in_ch  = 3 if input_mode in ("sweep-removed-input", "sweep-removed-residual") else int(cfg.get("in_channels", 2))
     res_ch = 2 if input_mode == "sweep-removed-residual" else int(cfg.get("residual_channel", 0))
-    depth = int(cfg.get("depth", 3)) # Use depth from config, default to 3
     model = NFDUNetFiLM(
         in_channels=in_ch,
         out_channels=1,
         cond_dim=int(cfg.get("cond_dim", 3)),
-        depth=depth, # Pass the configurable depth
+        depth=int(cfg.get("depth", 3)),
+        channels=cfg.get("channels"),
         residual_channel=res_ch,
     )
     return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))
@@ -199,7 +203,9 @@ def _build_unetfilm(cfg: dict) -> EulerianTrainingWrapper:
 @register_model("unetfilm-shallow")
 def _build_unetfilm_shallow(cfg: dict) -> EulerianTrainingWrapper:
     """
-    Lightweight NFDUNetFiLMShallow.  Same config keys as ``unetfilm``.
+    Lightweight NFDUNetFiLMShallow.  Same config keys as ``unetfilm`` except
+    ``depth``: the shallow architecture is fixed at two pooling levels.
+    For a configurable depth use ``type: unetfilm`` with a ``depth`` key.
 
     Config keys (all optional, defaults shown):
         in_channels:      2        — input channels (3 if sweep-removed modes)
@@ -208,18 +214,15 @@ def _build_unetfilm_shallow(cfg: dict) -> EulerianTrainingWrapper:
         input_mode:       standard — standard | sweep-removed-input |
                                      sweep-removed-residual
         residual_channel: 0        — which input channel to use as residual skip
-        depth:            2        — number of pooling levels (default is 2, matching original shallow depth)
     """
-    from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLMShallow
+    from model.NFDUNetFilm import NFDUNetFiLMShallow
     input_mode = cfg.get("input_mode", "standard")
     in_ch  = 3 if input_mode in ("sweep-removed-input", "sweep-removed-residual") else int(cfg.get("in_channels", 2))
     res_ch = 2 if input_mode == "sweep-removed-residual" else int(cfg.get("residual_channel", 0))
-    depth = int(cfg.get("depth", 2)) # Use depth from config, default to 2 (shallow)
     model = NFDUNetFiLMShallow(
         in_channels=in_ch,
         out_channels=1,
         cond_dim=int(cfg.get("cond_dim", 3)),
-        depth=depth, # Pass the configurable depth
         residual_channel=res_ch,
     )
     return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))
