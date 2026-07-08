@@ -179,15 +179,18 @@ def _build_unetfilm(cfg: dict) -> EulerianTrainingWrapper:
         input_mode:       standard — standard | sweep-removed-input |
                                      sweep-removed-residual
         residual_channel: 0        — which input channel to use as residual skip
+        depth:            3        — number of pooling levels (default is 3)
     """
     from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLM
     input_mode = cfg.get("input_mode", "standard")
     in_ch  = 3 if input_mode in ("sweep-removed-input", "sweep-removed-residual") else int(cfg.get("in_channels", 2))
     res_ch = 2 if input_mode == "sweep-removed-residual" else int(cfg.get("residual_channel", 0))
+    depth = int(cfg.get("depth", 3)) # Use depth from config, default to 3
     model = NFDUNetFiLM(
         in_channels=in_ch,
         out_channels=1,
         cond_dim=int(cfg.get("cond_dim", 3)),
+        depth=depth, # Pass the configurable depth
         residual_channel=res_ch,
     )
     return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))
@@ -197,15 +200,26 @@ def _build_unetfilm(cfg: dict) -> EulerianTrainingWrapper:
 def _build_unetfilm_shallow(cfg: dict) -> EulerianTrainingWrapper:
     """
     Lightweight NFDUNetFiLMShallow.  Same config keys as ``unetfilm``.
+
+    Config keys (all optional, defaults shown):
+        in_channels:      2        — input channels (3 if sweep-removed modes)
+        cond_dim:         3        — physics conditioning dimension
+        uses_physics:     true     — whether to consume "physics" from the batch
+        input_mode:       standard — standard | sweep-removed-input |
+                                     sweep-removed-residual
+        residual_channel: 0        — which input channel to use as residual skip
+        depth:            2        — number of pooling levels (default is 2, matching original shallow depth)
     """
     from GranularDynamics2.myClasses.NFDUNetFilm import NFDUNetFiLMShallow
     input_mode = cfg.get("input_mode", "standard")
     in_ch  = 3 if input_mode in ("sweep-removed-input", "sweep-removed-residual") else int(cfg.get("in_channels", 2))
     res_ch = 2 if input_mode == "sweep-removed-residual" else int(cfg.get("residual_channel", 0))
+    depth = int(cfg.get("depth", 2)) # Use depth from config, default to 2 (shallow)
     model = NFDUNetFiLMShallow(
         in_channels=in_ch,
         out_channels=1,
         cond_dim=int(cfg.get("cond_dim", 3)),
+        depth=depth, # Pass the configurable depth
         residual_channel=res_ch,
     )
     return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))

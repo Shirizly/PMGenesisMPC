@@ -88,56 +88,99 @@ class FiLMConvBlock(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NFD U-Net  with FiLM at every encoder + decoder block
+# NFD U-Net  with FiLM at every encoder + decoder block (Configurable Depth)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class NFDUNetFiLM(nn.Module):
     """
-    NFD shallow U-Net dynamics model conditioned on material properties via FiLM.
+    NFD dynamics model conditioned on material properties via FiLM, with configurable depth.
 
     Args:
-        in_channels : input channels  (default 3: state + 2 rendered actions)
-        out_channels: output channels (default 1: predicted next state)
+        in_channels : input channels  (default 2)
+        out_channels: output channels (default 1)
         cond_dim    : dimensionality of the property/conditioning vector z
-        base        : base channel width (default 8, matching Figure 7)
+        base        : base channel width (default 8)
+        depth       : number of pooling levels (encoder stages). Must be >= 1.
         film_hidden : hidden size of each FiLM MLP (default 64)
+        residual_channel: which input channel to use as residual skip (default 0)
     """
 
     def __init__(
         self,
         in_channels:  int = 2,
         out_channels: int = 1,
-        cond_dim:     int = 3,    # e.g. [friction, obj_size, pusher_width, density]
+        cond_dim:     int = 3,
         base:         int = 8,
+        depth:        int = 3, # New parameter for depth control (defaulting to original depth)
         film_hidden:  int = 64,
         residual_channel: int = 0,
     ):
         super().__init__()
         b = base
         self.residual_channel = residual_channel
+        self.depth = max(1, depth) # Ensure depth is at least 1
 
         kw = dict(cond_dim=cond_dim, hidden=film_hidden)
 
-        # ── Encoder ──────────────────────────────────────────────────────────
-        self.enc1 = FiLMConvBlock(in_channels, b,    **kw)
-        self.enc2 = FiLMConvBlock(b,           b*2,  **kw)
-        self.enc3 = FiLMConvBlock(b*2,         b*4,  **kw)
+        # --- Encoder Stages ---
+        self.encoder_blocks = nn.ModuleList()
+        skip_channels = [] # Stores (module, output_channels) for each level i=0..depth-1
+        current_in_ch = in_channels
+
+        for i in range(self.depth):
+            # Calculate output channels: b * (i + 1) for depth > 1, else just 'b'
+            out_ch = b * (i + 1) if i > 0 else b
+            block = FiLMConvBlock(current_in_ch, out_ch, **kw)
+            self.encoder_blocks.append(block)
+            skip_channels.append((block, out_ch))
+            current_in_ch = out_ch
+
+        # Pool layer is always used after the first encoder stage (i=0) up to depth-2
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        # ── Bottleneck ───────────────────────────────────────────────────────
-        self.bottleneck = FiLMConvBlock(b*4, b*4, **kw)
+        # --- Bottleneck Stage ---
+        bottleneck_in_ch = b * self.depth
+        self.bottleneck = FiLMConvBlock(bottleneck_in_ch, bottleneck_in_ch, **kw)
 
-        # ── Decoder ──────────────────────────────────────────────────────────
-        self.up3  = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.dec3 = FiLMConvBlock(b*4 + b*4, b*2, **kw)   # skip3 concat → 64→16
 
-        self.up2  = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.dec2 = FiLMConvBlock(b*2 + b*2, b,   **kw)   # skip2 concat → 32→ 8
+        # --- Decoder Stages (Dynamic Construction) ---
+        # Built into pre-sized lists indexed by level `i` (not appended) so that
+        # forward()'s `self.decoder_blocks[i]` / `self.up_layers[i]` lookups line
+        # up with the level they were constructed for.
+        decoder_blocks_by_level = [None] * self.depth
+        up_layers_by_level = [None] * self.depth
 
-        self.up1  = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.dec1 = FiLMConvBlock(b + b,      b//2, **kw)  # skip1 concat → 16→ 4
+        prev_out_ch = bottleneck_in_ch  # channel count feeding into the next upsample
 
-        # ── Output head (plain 1×1 conv, no FiLM) ───────────────────────────
+        for i in range(self.depth - 1, -1, -1):
+            up_layers_by_level[i] = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+
+            # Input channels for the decoder block: upsampled feature map + skip connection.
+            # up_in_ch is the actual output channel count of whatever feeds this upsample
+            # (the bottleneck for the first level, or the previous decoder block otherwise) -
+            # tracked directly rather than re-derived from a formula.
+            _, skip_out_ch = skip_channels[i]
+            up_in_ch = prev_out_ch
+            decoder_in_ch = up_in_ch + skip_out_ch
+
+            # Use the correct output channels for the decoder block (b*2, b, b//2 in original code).
+            # i == 0 (final stage, feeds self.head) is checked first so it always resolves to
+            # b//2 even when depth is small enough that it collides with the first/middle cases.
+            if i == 0: # d1 (final stage, must match self.head's expected input channels)
+                out_ch = b // 2
+            elif i == self.depth - 1: # d3 (first decoder stage, right after the bottleneck)
+                out_ch = b * 2
+            else: # d2 (middle stages)
+                out_ch = b
+
+            decoder_blocks_by_level[i] = FiLMConvBlock(decoder_in_ch, out_ch, **kw)
+            prev_out_ch = out_ch
+
+        self.decoder_blocks = nn.ModuleList(decoder_blocks_by_level)
+        self.up_layers = nn.ModuleList(up_layers_by_level)
+
+
+        # --- Output head (plain 1×1 conv, no FiLM) ───────────────────────────
         self.head = nn.Conv2d(b//2, out_channels, kernel_size=1)
 
     def forward(
@@ -149,27 +192,44 @@ class NFDUNetFiLM(nn.Module):
         Args:
             x      : (B, in_channels, H, W)  input tensor
             props  : (B, cond_dim)        material/object property vector z
-                                          e.g. [friction, obj_size,
-                                                pusher_width, density]
+                                          e.g. [friction, obj_size, pusher_width, density]
         Returns:
             pred   : (B, 1, H, W)        predicted next state ŝ_{t+1}
         """
 
         # Encoder
-        s1 = self.enc1(x,             props)        # (B, b,   H,   W  )
-        s2 = self.enc2(self.pool(s1), props)        # (B, b*2, H/2, W/2)
-        s3 = self.enc3(self.pool(s2), props)        # (B, b*4, H/4, W/4)
+        s = [] # List to hold all encoder outputs for skip connections
+        for i in range(self.depth):
+            block = self.encoder_blocks[i]
+            if i == 0:
+                output = block(x, props)
+            else:
+                output = block(self.pool(s[-1]), props)
+            s.append(output)
 
         # Bottleneck
-        b_feat = self.bottleneck(self.pool(s3), props)  # (B, b*4, H/8, W/8)
+        b_feat = self.bottleneck(self.pool(s[-1]), props)
 
-        # Decoder
-        d3 = self.dec3(torch.cat([self.up3(b_feat), s3], dim=1), props)
-        d2 = self.dec2(torch.cat([self.up2(d3),     s2], dim=1), props)
-        d1 = self.dec1(torch.cat([self.up1(d2),     s1], dim=1), props)
+        # Decoder (Iterating backwards from depth-1 down to 0)
+        d_features = b_feat # Start with bottleneck features
+
+        for i in range(self.depth - 1, -1, -1):
+            up_layer = self.up_layers[i]
+            dec_block = self.decoder_blocks[i]
+            skip_s = s[i]
+
+            # Upsample the previous decoder output (d_features)
+            up_feat = up_layer(d_features)
+
+            # Concatenate with skip connection
+            concat_input = torch.cat([up_feat, skip_s], dim=1)
+
+            # Pass through the decoder block
+            d_features = dec_block(concat_input, props)
+
 
         current_state = x[:, self.residual_channel:self.residual_channel + 1, :, :]
-        return self.head(d1) + current_state                       # (B, 1, H, W)
+        return self.head(d_features) + current_state                       # (B, 1, H, W)
 
 
 class NFDUNetFiLMShallow(nn.Module):

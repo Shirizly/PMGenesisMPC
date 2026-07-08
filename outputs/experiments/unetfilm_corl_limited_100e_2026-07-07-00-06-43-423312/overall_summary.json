@@ -1,0 +1,95 @@
+{
+  "suite_config": "simple_mpc/config/experiments/unetfilm_corl_limited_100e.yaml",
+  "base_config": "simple_mpc/config/config_simple.yaml",
+  "total_time_s": 148.86550641059875,
+  "n_experiments": 1,
+  "experiments": [
+    {
+      "name": "unetfilm_corl_limited_100e",
+      "description": "UNetFiLM trained on Genesis/data/corl_limited/cubes for 100 epochs",
+      "n_episodes": 2,
+      "overrides": {
+        "mpc.n_sample": 256,
+        "mpc.n_update_iter": 20,
+        "mpc.n_mpc": 8,
+        "dataset.obj": "chickcubes",
+        "dataset.num_objects": 20,
+        "dataset.material_shape": "cube"
+      },
+      "model_spec": {
+        "model_card": "runs_cubes/unetfilm_corl_limited_100e/model_card.yaml",
+        "inference_overrides": {
+          "particle_friction": 0.25,
+          "particle_density": 750.0,
+          "box_friction": 0.3
+        }
+      },
+      "results_dir": "outputs/experiments/unetfilm_corl_limited_100e/2026-07-07-00-06-43-423312",
+      "reward_gain": {
+        "mean": -50.38960647583008,
+        "std": 16.400386810302734,
+        "min": -66.78999328613281,
+        "max": -33.989219665527344,
+        "median": -50.38960647583008
+      },
+      "reward_final": {
+        "mean": -56.86563301086426,
+        "std": 9.771085739135742,
+        "min": -66.63671875,
+        "max": -47.094547271728516,
+        "median": -56.86563301086426
+      },
+      "reward_initial": {
+        "mean": -6.476024627685547,
+        "std": 6.629301071166992,
+        "min": -13.105325698852539,
+        "max": 0.1532764434814453,
+        "median": -6.476024627685547
+      },
+      "success_rate": 0.0,
+      "compute_time_s": {
+        "mean": 19.01706473731995,
+        "std": 0.026690183639525245,
+        "min": 18.99037455368042,
+        "max": 19.043754920959472,
+        "median": 19.01706473731995
+      },
+      "compute_time_per_step_s": {
+        "mean": 2.3771330921649936,
+        "std": 0.0033362729549406556,
+        "min": 2.3737968192100527,
+        "max": 2.380469365119934,
+        "median": 2.3771330921649936
+      },
+      "occ_reward_gain": {
+        "mean": -50.38960647583008,
+        "std": 16.400386810302734,
+        "min": -66.78999328613281,
+        "max": -33.989219665527344,
+        "median": -50.38960647583008
+      },
+      "occ_reward_final": {
+        "mean": -56.86563301086426,
+        "std": 9.771085739135742,
+        "min": -66.63671875,
+        "max": -47.094547271728516,
+        "median": -56.86563301086426
+      },
+      "occ_reward_initial": {
+        "mean": -6.476024627685547,
+        "std": 6.629301071166992,
+        "min": -13.105325698852539,
+        "max": 0.1532764434814453,
+        "median": -6.476024627685547
+      },
+      "mean_prediction_gap": {
+        "mean": 18.051864124834538,
+        "std": 2.3686553463339806,
+        "min": 15.683208778500557,
+        "max": 20.420519471168518,
+        "median": 18.051864124834538
+      },
+      "total_experiment_time_s": 148.75026655197144
+    }
+  ]
+}

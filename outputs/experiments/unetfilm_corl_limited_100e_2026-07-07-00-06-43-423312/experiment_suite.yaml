@@ -1,0 +1,41 @@
+# Single complete experiment bundle:
+# 1) train model if missing using unified training stack
+# 2) run one-model MPC evaluation through run_experiments.py
+
+base_config: simple_mpc/config/config_simple.yaml
+
+output:
+  root_dir: outputs/experiments
+  experiment_name: unetfilm_corl_limited_100e
+
+  save_rewards: true
+  save_actions: true
+  save_per_episode_npz: true
+  save_reward_plot: true
+  save_raw_obs: false
+  save_states: false
+
+  save_prediction_videos: false
+  benchmark_throughput: false
+  success_threshold: 0.0
+
+episodes:
+  n_episodes: 2
+  random_seed_base: 42
+
+experiments:
+  - name: unetfilm_corl_limited_100e
+    description: "UNetFiLM trained on Genesis/data/corl_limited/cubes for 100 epochs"
+    model:
+      model_card: runs_cubes/unetfilm_corl_limited_100e/model_card.yaml
+      inference_overrides:
+        particle_friction: 0.25
+        particle_density: 750.0
+        box_friction: 0.3
+    overrides:
+      mpc.n_sample: 256
+      mpc.n_update_iter: 20
+      mpc.n_mpc: 8
+      dataset.obj: chickcubes
+      dataset.num_objects: 20
+      dataset.material_shape: cube

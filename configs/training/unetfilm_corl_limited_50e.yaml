@@ -1,0 +1,47 @@
+# Unified training config for a single UNetFiLM run on corl_limited cubes.
+
+model: configs/model/unetfilm_configurable.yaml
+dataset: configs/dataset/genesis_corl_limited_cubes.yaml
+
+training:
+  epochs: 50
+  batch_size: 256
+  lr: 1.0e-3
+
+  lr_scheduler:
+    type: StepLR
+    step_size: 50
+    gamma: 0.75
+
+  augmentation: true
+  patience: 100
+  mixed_precision: true
+  grad_clip_norm: 1.0
+  save_every_n_epochs: 10
+  num_workers: 4
+
+  loss:
+    type: eulerian_combined
+    mse: 1.0
+    mass: 0.2
+    dice: 0.0
+    bce: 0.0
+    sharpness: 0.0
+    tv: 0.0
+    add: 0.0
+    remove: 0.0
+
+inference:
+  representation: eulerian
+  grid_n: 128
+  plate_length_m: 0.04
+  plate_width_m: 0.002
+  plate_sigma_px: 1.5
+  wkspc_w: 0.064
+  global_scale: 0.6
+  particle_friction: 0.25
+  particle_density: 750.0
+  box_friction: 0.3
+
+output:
+  log_dir: runs_cubes/unetfilm_corl_limited_50e

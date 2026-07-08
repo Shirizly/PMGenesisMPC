@@ -1,0 +1,12 @@
+# Model configuration for NFDUNetFiLM with configurable depth
+type: unetfilm
+cond_dim: 3
+uses_physics: true
+input_mode: standard
+
+# New parameter to control the model depth (number of pooling levels)
+depth: 4 # Example: Use a shallower network than default (3) for testing.
+
+# Other parameters can be kept or adjusted as needed
+in_channels: 2
+residual_channel: 0
