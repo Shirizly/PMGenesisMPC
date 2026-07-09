@@ -1,0 +1,15 @@
+# Modular UNet (model/futureintegration/UNetModels_modular.py) with
+# config-driven depth/width/activation/bottleneck choice.
+# Does not consume physics: forward(x) only.
+type: unet-modular
+
+in_channels: 2
+out_channels: 1
+uses_physics: false
+
+features: [8, 16, 32]
+kernel_size: 3
+activation: relu
+residual: true
+bottleneck_type: None
+bottleneck_kwargs: {}

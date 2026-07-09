@@ -1,0 +1,37 @@
+model:
+  type: unet-modular
+  in_channels: 2
+  out_channels: 1
+  uses_physics: false
+  features:
+  - 8
+  - 16
+  - 32
+  kernel_size: 3
+  activation: relu
+  residual: true
+  bottleneck_type: None
+  bottleneck_kwargs: {}
+  checkpoint: unet_best.pth
+physics:
+  normalization:
+    friction:
+      min: 0.05
+      max: 0.5
+    density:
+      min: 750.0
+      max: 5000.0
+    box_friction:
+      min: 0.05
+      max: 0.5
+inference:
+  representation: eulerian
+  grid_n: 128
+  plate_length_m: 0.04
+  plate_width_m: 0.002
+  plate_sigma_px: 1.5
+  wkspc_w: 0.064
+  global_scale: 0.6
+  particle_friction: 0.25
+  particle_density: 750.0
+  box_friction: 0.3

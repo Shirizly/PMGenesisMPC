@@ -244,3 +244,92 @@ def _build_gnn_propnet(cfg: dict) -> LagrangianTrainingWrapper:
     }
     model = PropNetDiffDenModel(model_cfg, use_gpu=torch.cuda.is_available())
     return LagrangianTrainingWrapper(model)
+
+
+@register_model("nca")
+def _build_nca(cfg: dict) -> EulerianTrainingWrapper:
+    """
+    NCAWithPhysics: Neural Cellular Automata local-update stack + a small
+    residual U-Net correction head. Physics is concatenated as extra static
+    input channels (not FiLM), matching the NFDUNetFiLM call signature.
+
+    Config keys (all optional, defaults shown):
+        in_channels:   2             — input channels (occupancy + action)
+        cond_dim:      3             — physics conditioning dimension
+        uses_physics:  true          — whether to consume "physics" from the batch
+        nca_hidden:    64            — NCA perception-conv hidden width
+        nca_steps:     8             — number of local NCA update iterations
+        unet_features: [32, 64, 128] — correction U-Net encoder widths
+    """
+    from model.NCAModels import NCAWithPhysics
+    model = NCAWithPhysics(
+        in_channels=int(cfg.get("in_channels", 2)),
+        physics_dim=int(cfg.get("cond_dim", 3)),
+        nca_hidden=int(cfg.get("nca_hidden", 64)),
+        nca_steps=int(cfg.get("nca_steps", 8)),
+        unet_features=cfg.get("unet_features", [32, 64, 128]),
+    )
+    return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))
+
+
+@register_model("spatial-transformer")
+def _build_spatial_transformer(cfg: dict) -> EulerianTrainingWrapper:
+    """
+    EulerianSTN: predicts the next occupancy grid by warping the current
+    occupancy through a learned displacement field (grid_sample), rather than
+    generating pixel values directly.
+
+    Config keys (all optional, defaults shown):
+        in_channels:   2      — input channels (occupancy + action)
+        uses_physics:  true   — required: forward() takes props positionally
+                                even though physics values are currently
+                                unused internally (accepted for API parity)
+        base_channels: 32     — channel width of the localization network
+        depth:         3      — number of localization conv layers
+        flow_scale:    0.1    — scale applied to the raw predicted flow
+
+    Note: EulerianSTN also computes a Jacobian-incompressibility regulariser
+    on ``model.last_j_loss`` after each forward pass; it is not yet wired into
+    EulerianCombinedLoss, so it has no effect on the training objective here.
+    """
+    from model.SpatTransNet import EulerianSTN
+    model = EulerianSTN(
+        in_channels=int(cfg.get("in_channels", 2)),
+        base_channels=int(cfg.get("base_channels", 32)),
+        depth=int(cfg.get("depth", 3)),
+        flow_scale=float(cfg.get("flow_scale", 0.1)),
+    )
+    return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", True)))
+
+
+@register_model("unet-modular")
+def _build_unet_modular(cfg: dict) -> EulerianTrainingWrapper:
+    """
+    Modular UNet with config-driven depth/width/activation/bottleneck choice.
+    Does not consume physics (forward(x) only); leave uses_physics: false.
+
+    Config keys (all optional, defaults shown):
+        in_channels:      2          — input channels (occupancy + action)
+        out_channels:     1
+        features:         [8,16,32] — per-level encoder widths
+        kernel_size:       3
+        activation:        relu     — relu | leaky_relu | gelu | silu | mish | elu | identity
+        residual:          true     — predict a delta added to input channel 0
+        bottleneck_type:   None     — None | FCN | SE | FC_channel | FC_flat | Transformer
+        bottleneck_kwargs: {}       — extra kwargs for the chosen bottleneck_type
+        uses_physics:      false    — model has no physics input; kept for
+                                      symmetry with other factories
+    """
+    from model.UNetModels_modular import UNet
+    structure_parameters = {
+        "features": cfg.get("features", [8, 16, 32]),
+        "in_channels": int(cfg.get("in_channels", 2)),
+        "out_channels": int(cfg.get("out_channels", 1)),
+        "kernel_size": int(cfg.get("kernel_size", 3)),
+        "activation": cfg.get("activation", "relu"),
+        "residual": bool(cfg.get("residual", True)),
+        "bottleneck_type": cfg.get("bottleneck_type", "None"),
+        "bottleneck_kwargs": cfg.get("bottleneck_kwargs", {}),
+    }
+    model = UNet(structure_parameters)
+    return EulerianTrainingWrapper(model, uses_physics=bool(cfg.get("uses_physics", False)))

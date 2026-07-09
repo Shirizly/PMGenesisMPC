@@ -1,0 +1,45 @@
+# 1-epoch integration smoke test for the NCAWithPhysics model.
+# Copied from unetfilm_corl_limited_50e.yaml as a reference training config.
+
+model: configs/model/nca.yaml
+dataset: configs/dataset/genesis_corl_limited_cubes.yaml
+
+training:
+  epochs: 1
+  batch_size: 32
+  lr: 1.0e-3
+
+  # augmentation off: the ×8 spatial augmentation multiplies per-batch compute
+  # 8x, which is unnecessary for an integration smoke test.
+  augmentation: false
+  patience: 100
+  mixed_precision: true
+  grad_clip_norm: 1.0
+  save_every_n_epochs: 1
+  num_workers: 4
+
+  loss:
+    type: eulerian_combined
+    mse: 1.0
+    mass: 0.2
+    dice: 0.0
+    bce: 0.0
+    sharpness: 0.0
+    tv: 0.0
+    add: 0.0
+    remove: 0.0
+
+inference:
+  representation: eulerian
+  grid_n: 128
+  plate_length_m: 0.04
+  plate_width_m: 0.002
+  plate_sigma_px: 1.5
+  wkspc_w: 0.064
+  global_scale: 0.6
+  particle_friction: 0.25
+  particle_density: 750.0
+  box_friction: 0.3
+
+output:
+  log_dir: runs_cubes/nca_corl_limited_1e_test

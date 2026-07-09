@@ -25,9 +25,12 @@ model/
   diff_mass_push.py     differentiable mass-push kernels used by the
                         heuristic push models
   gnn_dyn.py            PropNetDiffDenModel (Lagrangian GNN dynamics)
-  futureintegration/    salvaged architectures awaiting registry integration
-                        (NCA, STN, MultiExit/plain/conditioned/modular U-Nets,
-                        differentiable renderer — see its README)
+  futureintegration/    salvaged architectures; three are now registered
+                        (see below), the rest await consolidation/are
+                        skipped/broken — see its README for the breakdown
+    NCAModels.py            NCAWithPhysics       → model type "nca"
+    SpatTransNet.py         EulerianSTN          → model type "spatial-transformer"
+    UNetModels_modular.py   UNet (config-driven) → model type "unet-modular"
 
 transforms/
   functional.py         particles_to_occupancy, draw_plate_soft,
