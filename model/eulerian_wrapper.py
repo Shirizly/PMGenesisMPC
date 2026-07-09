@@ -55,7 +55,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Sequence, Tuple, Dict, Any
+from typing import Sequence, Tuple, Dict, Any, Callable
 
 
 # ---------------------------------------------------------------------------
@@ -1005,6 +1005,141 @@ class CumulativePushModel(nn.Module):
                         max_iters=self.redistribute_iters)
 
         return rho_new.permute(0, 2, 1)        # (B, Nx, Ny)
+
+
+# ---------------------------------------------------------------------------
+# Push-model registry
+# ---------------------------------------------------------------------------
+#
+# The five classes above have no learned weights — they are hardcoded
+# geometric heuristics, so they don't fit the checkpoint-oriented
+# ``registry/model_registry.py`` (whose factories return a
+# ``ModelTrainingWrapper`` with a ``forward(batch)`` training contract).
+# This is a parallel, lightweight registry for *this* file's models: given a
+# config dict it returns a ready-to-use ``nn.Module`` implementing
+# ``forward(occ, action_start, action_end)``, suitable for dropping straight
+# into ``EulerianModelWrapper`` for MPC deployment.
+#
+# Adding a new heuristic: decorate its factory with
+# ``@register_push_model("your_name")``; the factory reads ``cfg`` and
+# returns the constructed module.
+
+_PUSH_MODEL_REGISTRY: dict[str, Callable[[dict], nn.Module]] = {}
+
+
+def register_push_model(name: str):
+    """Decorator: ``@register_push_model("splat")``."""
+    def decorator(factory_fn: Callable[[dict], nn.Module]):
+        _PUSH_MODEL_REGISTRY[name] = factory_fn
+        return factory_fn
+    return decorator
+
+
+def build_push_model(cfg: dict) -> nn.Module:
+    """
+    Instantiate a heuristic push model (no learned weights) from a config dict.
+
+    Parameters
+    ----------
+    cfg : dict
+        Must contain ``heuristic_type`` (defaults to ``"spread"`` if absent,
+        matching the historical default); remaining keys are model-specific
+        (``width``, ``sigma``, ...).
+
+    Returns
+    -------
+    nn.Module implementing ``forward(occ, action_start, action_end) -> occ_pred``,
+    ready to pass as ``user_model`` into ``EulerianModelWrapper``.
+    """
+    htype = str(cfg.get("heuristic_type", "spread")).lower()
+    if htype not in _PUSH_MODEL_REGISTRY:
+        raise KeyError(
+            f"Unknown heuristic_type {htype!r}. Registered: {sorted(_PUSH_MODEL_REGISTRY)}"
+        )
+    return _PUSH_MODEL_REGISTRY[htype](cfg)
+
+
+@register_push_model("splat")
+def _build_splat(cfg: dict) -> SplatPushModel:
+    """
+    Config keys (optional, defaults shown):
+        width: 5.0  sigma: 0.5  redistribute: false  redistribute_iters: 10
+    """
+    return SplatPushModel(
+        width=float(cfg.get("width", 5.0)),
+        sigma=float(cfg.get("sigma", 0.5)),
+        redistribute=bool(cfg.get("redistribute", False)),
+        redistribute_iters=int(cfg.get("redistribute_iters", 10)),
+    )
+
+
+@register_push_model("spread")
+def _build_spread(cfg: dict) -> SpreadPushModel:
+    """
+    Config keys (optional, defaults shown):
+        width: 5.0  sigma: 0.5  redistribute: false  redistribute_iters: 10
+    """
+    return SpreadPushModel(
+        width=float(cfg.get("width", 5.0)),
+        sigma=float(cfg.get("sigma", 0.5)),
+        redistribute=bool(cfg.get("redistribute", False)),
+        redistribute_iters=int(cfg.get("redistribute_iters", 10)),
+    )
+
+
+@register_push_model("spread2")
+def _build_spread2(cfg: dict) -> SplatPushModel2:
+    """
+    Destination-aware spread with optional post-deposit blur.
+
+    Config keys (optional, defaults shown):
+        width: 3.0  sigma: 1.0  blur_sigma: 0.0
+        redistribute: false  redistribute_iters: 10
+    """
+    return SplatPushModel2(
+        width=float(cfg.get("width", 3.0)),
+        sigma=float(cfg.get("sigma", 1.0)),
+        blur_sigma=float(cfg.get("blur_sigma", 0.0)),
+        redistribute=bool(cfg.get("redistribute", False)),
+        redistribute_iters=int(cfg.get("redistribute_iters", 10)),
+    )
+
+
+@register_push_model("cumulative")
+def _build_cumulative(cfg: dict) -> CumulativePushModel:
+    """
+    Snow-plow cumulative-mass-ahead deposit; exact for non-uniform density.
+
+    Config keys (optional, defaults shown):
+        width: 3.0  sigma: 1.0  redistribute: false  redistribute_iters: 10
+    """
+    return CumulativePushModel(
+        width=float(cfg.get("width", 3.0)),
+        sigma=float(cfg.get("sigma", 1.0)),
+        redistribute=bool(cfg.get("redistribute", False)),
+        redistribute_iters=int(cfg.get("redistribute_iters", 10)),
+    )
+
+
+@register_push_model("fluid")
+def _build_fluid(cfg: dict) -> FluidPushModel:
+    """
+    Config keys (optional, defaults shown):
+        width: 5.0  sigma: 1.5  n_steps: 20  decay: 0.95
+        media_sharpness: 5.0  blur_sigma: 1.0  correct_divergence: false
+        redistribute: false  redistribute_iters: 10
+    """
+    return FluidPushModel(
+        width=float(cfg.get("width", 5.0)),
+        sigma=float(cfg.get("sigma", 1.5)),
+        n_steps=int(cfg.get("n_steps", 20)),
+        decay=float(cfg.get("decay", 0.95)),
+        media_sharpness=float(cfg.get("media_sharpness", 5.0)),
+        blur_sigma=float(cfg.get("blur_sigma", 1.0)),
+        correct_divergence=bool(cfg.get("correct_divergence", False)),
+        redistribute=bool(cfg.get("redistribute", False)),
+        redistribute_iters=int(cfg.get("redistribute_iters", 10)),
+    )
 
 
 class UNetFiLMPushModel(nn.Module):

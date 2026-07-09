@@ -20,7 +20,11 @@ model/
   NFDUNetFilm.py        NFDUNetFiLM / NFDUNetFiLMShallow — the U-Net
                         implementations built by the "unetfilm*" factories
   eulerian_wrapper.py   EulerianModelWrapper (MPC-facing occupancy wrapper),
-                        heuristic push models (splat/fluid/spread/cumulative),
+                        heuristic push models (splat/spread/spread2/cumulative/
+                        fluid) plus register_push_model/build_push_model — a
+                        parallel, checkpoint-free registry (these have no
+                        learned weights, so they don't go through
+                        registry/model_registry.py or model_card.py),
                         UNetFiLMPushModel, particle<->occupancy helpers
   diff_mass_push.py     differentiable mass-push kernels used by the
                         heuristic push models
@@ -68,7 +72,11 @@ configs/
   training/             experiment YAMLs composing model+dataset+training
 
 tests/
-  test_configurable_unet.py  registry/model smoke tests (pytest)
+  test_configurable_unet.py       registry/model smoke tests (pytest)
+  test_futureintegration_models.py  nca/spatial-transformer/unet-modular smoke tests
+  test_model_card.py             model_card save/load round-trip
+  test_push_model_registry.py    build_push_model + EulerianModelWrapper
+                                  end-to-end forward for all 5 heuristics
 
 utils.py                shared root-level helpers (YAML I/O, action geometry,
                         point-cloud ops, goal-shape generation) used by
@@ -78,9 +86,11 @@ utils.py                shared root-level helpers (YAML I/O, action geometry,
 Entry points beyond `training/train.py`:
 
 ```
-run_experiments.py       MPC experiment-suite runner; loads models via
-                         model cards, writes outputs/experiments/ and
-                         mpc_transitions/
+run_experiments.py       MPC experiment-suite runner; loads trained models via
+                         model cards, or heuristic push models via
+                         model.eulerian_wrapper.build_push_model (model.type:
+                         eulerian, need_weights: false); writes
+                         outputs/experiments/ and mpc_transitions/
 run_experiment_batch.py  subprocess driver running run_experiments.py over
                          multiple suite YAMLs
 visualize.py             dataset / occupancy / prediction visualization

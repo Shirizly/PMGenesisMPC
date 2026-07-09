@@ -53,8 +53,12 @@ episodes:
 # model keys:
 #   type:           'eulerian' | 'unetfilm'
 #   need_weights:   false for heuristic eulerian models
-#   heuristic_type: 'spread' | 'splat' | 'fluid'  (eulerian only)
+#   heuristic_type: 'spread' | 'splat' | 'spread2' | 'cumulative' | 'fluid'
+#                   (eulerian only; see model/eulerian_wrapper.py's
+#                   push-model registry, build_push_model)
 #   grid_n:         occupancy grid side length in pixels (e.g. 128, 64, 32)
+#   (width, sigma, decay, n_steps, ... : optional per-heuristic overrides,
+#   fall back to registry defaults if omitted)
 #   weights_path:   path to .pth checkpoint (unetfilm only)
 #   physics_dim:    physics embedding size (unetfilm, default 3)
 #

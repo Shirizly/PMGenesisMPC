@@ -157,12 +157,7 @@ def _ensure_model_card_ready(model_spec: dict) -> str:
 
 def _build_eulerian_heuristic(model_spec: dict, cfg: dict, env):
     """Create an explicit heuristic Eulerian model (no learned weights)."""
-    from model.eulerian_wrapper import (
-        EulerianModelWrapper,
-        FluidPushModel,
-        SplatPushModel,
-        SpreadPushModel,
-    )
+    from model.eulerian_wrapper import EulerianModelWrapper, build_push_model
 
     if env is None:
         raise ValueError(
@@ -170,22 +165,11 @@ def _build_eulerian_heuristic(model_spec: dict, cfg: dict, env):
             "(needed by forward pass to convert world-space actions to grid coords)"
         )
 
-    heuristic_type = model_spec.get("heuristic_type", "spread").lower()
-    if heuristic_type == "splat":
-        push_model = SplatPushModel(width=5.0, sigma=0.5)
-    elif heuristic_type == "fluid":
-        push_model = FluidPushModel(
-            width=5.0,
-            sigma=1.5,
-            n_steps=20,
-            decay=0.95,
-            media_sharpness=5.0,
-            blur_sigma=1.0,
-        )
-    elif heuristic_type == "spread":
-        push_model = SpreadPushModel(width=5.0, sigma=0.5)
-    else:
-        raise ValueError(f"Unknown heuristic_type: {heuristic_type!r}")
+    # heuristic_type: 'splat' | 'spread' | 'spread2' | 'cumulative' | 'fluid'
+    # (see model/eulerian_wrapper.py's push-model registry). Per-heuristic
+    # hyperparameters (width, sigma, decay, ...) may also be set in model_spec
+    # and are forwarded as-is; unset ones fall back to the registry defaults.
+    push_model = build_push_model(model_spec)
 
     bounds = EulerianModelWrapper.default_bounds(cfg, convention="genesis")
     grid_n = int(model_spec.get("grid_n", 64))
@@ -218,8 +202,14 @@ def load_model(model_spec: dict, cfg: dict, env=None, force_reload: bool = False
     train_if_missing   : if true and model_card does not exist, runs
                          `python -m training.train <training_config> ...`.
     inference_overrides: merged into cfg['dataset'] before load_model_from_card.
-    heuristic_type     : for eulerian-heuristic, one of 'splat'|'fluid'|'spread'.
+    heuristic_type     : for eulerian-heuristic, one of the names registered in
+                         model.eulerian_wrapper's push-model registry:
+                         'splat'|'spread'|'spread2'|'cumulative'|'fluid'.
+                         Defaults to 'spread'.
     grid_n             : for eulerian-heuristic, occupancy grid size.
+    (heuristic hyperparameters, e.g. width/sigma/decay/n_steps, may also be
+    set directly on model_spec; unset ones fall back to registry defaults —
+    see model/eulerian_wrapper.py's build_push_model)
     """
     mtype = model_spec.get("type", "").lower()
     is_heuristic = (
