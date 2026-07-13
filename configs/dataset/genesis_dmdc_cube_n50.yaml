@@ -1,0 +1,22 @@
+# Small single-subfolder Genesis dataset for the DMDc falsification baseline
+# (dmdc_baseline.py). Intentionally tiny — an integration smoke target, not a
+# statistically powerful falsification set. 7 runs x 20 = ~140 single-push
+# transitions (NOT trajectories).
+
+type: genesis
+
+paths:
+  - ignore/cube/n50/size0.005
+
+# 7 physics groups; hold one out for test, none for val.
+val_pct: 0
+test_pct: 15
+
+resolution_scale: 0.5   # box 0.128 m -> 64x64 grid
+include_physics: true
+
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

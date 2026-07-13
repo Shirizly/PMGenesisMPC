@@ -94,6 +94,39 @@ class PileSweepData(Dataset):
     def __len__(self):
         return len(self._run_lookup)
 
+    # ------------------------------------------------------------------
+    # Public accessors for transition metadata not carried in the batch
+    # (used e.g. by the DMDc baseline, which needs the raw world-frame push
+    # and per-run grouping that the rasterised batch does not expose).
+    # ------------------------------------------------------------------
+
+    @property
+    def workspace_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """((x_min, y_min), (x_max, y_max)) world-metre extent of the box,
+        centred at the origin (same frame as the raw actions)."""
+        x_dim, y_dim, _ = self.configs[0]["box"]["vol"]
+        return (-x_dim / 2.0, -y_dim / 2.0), (x_dim / 2.0, y_dim / 2.0)
+
+    def get_run_index(self, idx: int) -> int:
+        """Index of the run (data file) that sample ``idx`` belongs to.
+        Samples sharing a run share nominal physics and particle geometry."""
+        return self._run_lookup[idx]
+
+    def get_raw_action(self, idx: int) -> torch.Tensor:
+        """Raw world-frame push ``[sx, sy, ex, ey]`` (metres) for sample ``idx``.
+
+        This is the plate start/stop position before rasterisation into the
+        input action channel, recovered from the underlying run arrays.
+        """
+        run_idx = self._run_lookup[idx]
+        sample_index = idx - self._offsets[run_idx]
+        run = self.runs[run_idx]
+        p_start = run["p_starts"][sample_index]
+        p_stop = run["p_stops"][sample_index]
+        return torch.tensor(
+            [p_start[0], p_start[1], p_stop[0], p_stop[1]], dtype=torch.float32
+        )
+
     def _create_grids(
             self, 
             config
