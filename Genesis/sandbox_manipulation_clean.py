@@ -640,36 +640,59 @@ class SandboxManipulation:
         self._particle_state[:, :, 0:3] = self._get_particle_positions()
         self._particle_state[:, :, 3:] = self._get_particle_quats()
 
-    def broadcast_state_from_env(self, src_env: int = 0) -> None:
+    def set_particle_state(self, pos: torch.Tensor, quat: torch.Tensor) -> None:
         """
-        Copy particle pose (position + quaternion) from environment
-        ``src_env`` to every environment, and zero particle velocities.
+        Set every environment's particle pose directly from given tensors,
+        and zero particle velocities.
 
-        Used by multi-candidate rollout planners (see
-        ``simple_mpc.genesis_oracle.GenesisOracleEnv``) to reset all
-        ``n_envs`` copies to a common starting state before evaluating a new
-        batch of candidate pushes. Requires ``self._particle_state`` to be
-        current (i.e. ``update_material_state()`` was called after the last
-        push). Does not touch the plate: ``execute_action`` teleports the
-        plate to its start pose on every call, so no explicit plate reset is
-        needed between rollouts.
+        Parameters
+        ----------
+        pos  : (1, n_particles, 3) — broadcast to all ``n_envs``.
+        quat : (1, n_particles, 4) — broadcast to all ``n_envs``.
+
+        Lower-level primitive underlying ``broadcast_state_from_env``.
+        Planners that must keep an *immutable* reference state across
+        several rollouts (see
+        ``simple_mpc.genesis_oracle.GenesisOracleEnv.snapshot_particles`` /
+        ``restore_snapshot``) should call this directly with a frozen
+        snapshot, rather than ``broadcast_state_from_env``, whose source
+        (``self._particle_state[src_env]``) can itself have been overwritten
+        by an intervening rollout. Does not touch the plate:
+        ``execute_action`` teleports the plate to its start pose on every
+        call, so no explicit plate reset is needed between rollouts.
         """
         envs_idx = torch.arange(self._n_envs, device=gs.device)
-        src_pos  = self._particle_state[src_env:src_env + 1, :, 0:3]   # (1, n_p, 3)
-        src_quat = self._particle_state[src_env:src_env + 1, :, 3:7]   # (1, n_p, 4)
         for particle_idx, particle in enumerate(self.material):
             particle.set_pos(
-                src_pos[:, particle_idx, :].expand(self._n_envs, 3), envs_idx=envs_idx)
+                pos[:, particle_idx, :].expand(self._n_envs, 3), envs_idx=envs_idx)
             particle.set_quat(
-                src_quat[:, particle_idx, :].expand(self._n_envs, 4), envs_idx=envs_idx)
+                quat[:, particle_idx, :].expand(self._n_envs, 4), envs_idx=envs_idx)
         if self._particle_dofs_idx.numel() > 0:
             self._scene.rigid_solver.set_dofs_velocity(
                 torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
                 dofs_idx=self._particle_dofs_idx,
                 skip_forward=True,
             )
-        self._particle_state[:] = self._particle_state[src_env:src_env + 1].expand(
-            self._n_envs, -1, -1)
+        self._particle_state[:, :, 0:3] = pos.expand(self._n_envs, -1, -1)
+        self._particle_state[:, :, 3:7] = quat.expand(self._n_envs, -1, -1)
+
+    def broadcast_state_from_env(self, src_env: int = 0) -> None:
+        """
+        Copy particle pose (position + quaternion) from environment
+        ``src_env``'s CURRENT (live) state to every environment.
+
+        Used for one-off resyncs (e.g. after ``shuffle_particles()``) where
+        ``src_env``'s live state is known to be the correct reference. For
+        repeated use across several rollouts where ``src_env`` might itself
+        be mutated in between (e.g. env 0 also plays the role of a rollout
+        worker during planning — see ``GenesisOracleEnv``), capture a
+        snapshot once with ``set_particle_state``'s inputs saved externally
+        instead of relying on this method's live read.
+        """
+        self.set_particle_state(
+            self._particle_state[src_env:src_env + 1, :, 0:3],
+            self._particle_state[src_env:src_env + 1, :, 3:7],
+        )
 
     def plate_velocity_translation(
             self,
@@ -834,16 +857,27 @@ class SandboxManipulation:
             p_start,
             p_stop,
             angle,
+            on_phase=None,
         ):
         """
         Execute action (lower, sweep, lift) for all environments.
-        
+
         Args:
             p_start: Starting positions [n_envs, 3]
             p_stop: Stopping positions [n_envs, 3]
             angle: Angles [n_envs]
             lift_height: Lift height [n_envs, 3]
-        
+            on_phase: optional callback(phase: str), invoked at two points
+                inside the push motion:
+                    'post_lower' — plate has just reached p_start (about to sweep)
+                    'post_sweep' — plate has just reached its stop position
+                                   (about to lift)
+                Shared across every caller of execute_action (GenesisEnv,
+                GenesisOracleEnv, data collection, future MPC/viz code) — e.g.
+                to capture an intermediate video frame, log, or debug-plot the
+                mid-action state. A no-op when None; callers that don't pass
+                it (e.g. batched rollout planning) see no behavior change.
+
         Returns:
             Tensor of shape [n_envs] with success status
         """
@@ -857,6 +891,8 @@ class SandboxManipulation:
         lower_start = p_start + self._clearance_offset
         self.plate.set_pos(lower_start, zero_velocity=True)
         self.plate_position_translation(lower_start, p_start, self._clearance_ctrl_steps)
+        if on_phase is not None:
+            on_phase('post_lower')
 
         # Sweep
         reached_goal, final_pos = self.plate_velocity_translation(
@@ -864,6 +900,8 @@ class SandboxManipulation:
             p_stop,
             angle,
         )
+        if on_phase is not None:
+            on_phase('post_sweep')
 
         # Lift: simulate only the short ascent to clearance height, then
         # teleport the plate out of the way.  Particles are already below

@@ -17,7 +17,7 @@ import time
 import numpy as np
 import torch
 
-from utils import load_yaml, depth2fgpcd
+from utils import load_yaml, depth2fgpcd, write_video_frame
 from model.eulerian_wrapper import EulerianModelWrapper
 from training.losses import build_loss
 from training.types import ModelOutput
@@ -207,11 +207,7 @@ def run_oracle_mpc(
     occ_rewards[0] = rewards[0]   # oracle has a single occupancy-reward path
     if states is not None:
         states.append(_raw_pts_from_obs(obs_cur, global_scale, cam_params))
-    if video_recorder is not None:
-        writer = video_recorder[0] if isinstance(video_recorder, list) else video_recorder
-        bgr = np.ascontiguousarray(
-            (np.clip(obs_cur[..., :3], 0.0, 1.0) * 255).astype(np.uint8)[..., ::-1])
-        writer.write(bgr)
+    write_video_frame(obs_cur, video_recorder)
 
     print(f"  initial reward: {rewards[0]:.4f}")
 
@@ -220,6 +216,16 @@ def run_oracle_mpc(
     # ── MPC loop ────────────────────────────────────────────────────────────
     for i in range(n_mpc):
         t_step_start = time.time()
+
+        # Freeze env 0's true current state ONCE for this MPC step. Every
+        # rollout below restores FROM THIS SNAPSHOT, never from env 0's live
+        # state — env 0 is itself one of the n_envs candidate workers (see
+        # GenesisOracleEnv docstring) and gets a real candidate action
+        # applied to it on every rollout, so its live state drifts after the
+        # first one. Restoring from a stale/drifted live state instead of
+        # this snapshot was the root cause of a large, compounding
+        # predicted-vs-actual reward gap.
+        step_snapshot = env.snapshot_particles()
 
         init_mean = (action_sampler.sample(1, n_ahead, clip_lo, clip_hi, device=device)[0].detach()
                      if i == 0 else optimizer.warm_start_mean())
@@ -233,13 +239,14 @@ def run_oracle_mpc(
             for _b in range(n_batches_per_iter):
                 cand = optimizer.ask(env.n_envs)   # (n_envs, n_ahead, 4)
                 if cost_mode == 'discounted':
-                    _, step_pos = env.rollout_candidates(cand, collect_intermediate=True)
+                    _, step_pos = env.rollout_candidates(
+                        cand, step_snapshot, collect_intermediate=True)
                     occ_steps = [env.particles_to_occ(p, grid_bounds, grid_res, footprint_r)
                                  for p in step_pos]
                     cost = _discounted_cost(occ_steps, occ_cur_opt, goal_mask,
                                              score_tensor, loss_fn, gamma)
                 else:
-                    pos = env.rollout_candidates(cand)
+                    pos = env.rollout_candidates(cand, step_snapshot)
                     occ = env.particles_to_occ(pos, grid_bounds, grid_res, footprint_r)
                     cost = _per_sample_cost(occ, occ_cur_opt, goal_mask, score_tensor, loss_fn)
                 cand_batches.append(cand)
@@ -262,12 +269,22 @@ def run_oracle_mpc(
         rollout_time += t_rollout
         optim_time   += t_optim
 
-        # -- re-roll the winning sequence to record states_pred + a
-        #    predicted-vs-actual sanity check (should match closely: same
-        #    deterministic sim, same broadcast starting state). ------------
+        # -- re-roll the winning sequence AT FULL (real-step) FIDELITY, from
+        #    the same frozen snapshot, to record states_pred + a
+        #    predicted-vs-actual sanity check. With use_rollout_fidelity=False
+        #    this uses the exact same settle/clearance budgets as the real
+        #    step below, so the two should match almost exactly (same
+        #    deterministic sim, same starting state, same action — the model
+        #    IS the simulator). Using the reduced rollout-fidelity budgets
+        #    here (as an earlier version did) confounded this check with a
+        #    genuine physics difference (less settle time = different
+        #    resting positions), on top of comparing incompatible occupancy
+        #    representations below. ------------------------------------------
         with torch.no_grad():
             winner_batch = best_seq.unsqueeze(0).expand(env.n_envs, -1, -1).contiguous()
-            _, pred_step_pos = env.rollout_candidates(winner_batch, collect_intermediate=True)
+            _, pred_step_pos = env.rollout_candidates(
+                winner_batch, step_snapshot, collect_intermediate=True,
+                use_rollout_fidelity=False)
         pred_occ_seq = [
             env.particles_to_occ(p[0:1], grid_bounds, grid_res, footprint_r)[0].cpu().numpy()
             for p in pred_step_pos
@@ -292,12 +309,26 @@ def run_oracle_mpc(
               f"act=[{_sx:.3f} {_sy:.3f} {_ex:.3f} {_ey:.3f}]  "
               f"angle={math.degrees(_angle):.1f}°")
 
-        # -- execute best action in the real env (broadcast to all K envs) --
+        # -- restore the true state (the re-roll above mutated env 0's live
+        #    state) THEN execute the best action for real, broadcast to all
+        #    K envs. ----------------------------------------------------------
+        env.restore_snapshot(step_snapshot)
         obs_next = env.step(best_action_np, video_recorder=video_recorder)
 
         occ_next_report = _report_occupancy_from_obs(
             obs_next, global_scale, cam_params, grid_bounds, grid_res, device)
         r_next = _occupancy_reward(occ_next_report, score_tensor)
+
+        # Representation-consistent actual reward: same footprint-splat
+        # function used for predicted_reward, applied to the REAL post-step
+        # particle positions. This isolates the pure physics/determinism
+        # check from the (expected, documented) gap against the dense
+        # depth-render reward used for rewards[]/occ_rewards[] — those stay
+        # on the report-reward convention for comparability with
+        # learned-model MPC runs; this is purely a diagnostic.
+        occ_cur_opt = env.particles_to_occ(
+            env.current_particles_world(), grid_bounds, grid_res, footprint_r)
+        r_next_matching = _occupancy_reward(occ_cur_opt, score_tensor)
 
         if raw_obs is not None:
             raw_obs[i + 1] = obs_next
@@ -307,12 +338,28 @@ def run_oracle_mpc(
         rewards[i + 1]     = r_next
         occ_rewards[i + 1] = r_next
         occ_cur_report     = occ_next_report
-        occ_cur_opt = env.particles_to_occ(
-            env.current_particles_world(), grid_bounds, grid_res, footprint_r)
 
         total_time += time.time() - t_step_start
-        print(f"          env reward after step: {r_next:.4f}  "
-              f"(predicted: {predicted_reward:.4f}  gap: {r_next - predicted_reward:+.4f})")
+        # Occupied-voxel counts for both representations, at the SAME real
+        # post-step state — a direct way to see whether the dense-vs-sparse
+        # gap is a "coverage" effect (dense covers more of the 64x64 grid
+        # than the footprint-splat union does) rather than a physics gap.
+        # If the footprint deficit (dense_vox - footprint_vox) grows as
+        # material clusters into the goal (i.e. as reward improves), that
+        # points at footprint disks failing to fully union over tightly
+        # packed / rotated particles — see
+        # transforms.functional.footprint_radius_voxels' shape_factor.
+        dense_vox     = float(occ_next_report.clamp(0.0, 1.0).sum().item())
+        footprint_vox = float(occ_cur_opt.clamp(0.0, 1.0).sum().item())
+        print(f"          env reward after step (dense/report): {r_next:.4f}  "
+              f"gap vs predicted: {r_next - predicted_reward:+.4f}  |  "
+              f"same-repr actual: {r_next_matching:.4f}  "
+              f"gap vs predicted: {r_next_matching - predicted_reward:+.4f}  "
+              f"(should be ≈0 — same-repr isolates the physics/determinism "
+              f"check from the dense-vs-sparse occupancy representation gap)")
+        print(f"          occupied voxels (of {grid_res[0] * grid_res[1]}): "
+              f"dense={dense_vox:.0f}  footprint={footprint_vox:.0f}  "
+              f"deficit={dense_vox - footprint_vox:+.0f}")
 
     compute_time = rollout_time + optim_time
     sim_time     = total_time - compute_time

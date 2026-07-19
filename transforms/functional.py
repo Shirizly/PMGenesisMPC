@@ -128,6 +128,7 @@ def footprint_radius_voxels(
     global_scale: float,
     bounds: Dict[str, float],
     resolution: Tuple[int, ...],
+    shape_factor: float = 1.0,
 ) -> float:
     """
     Convert a particle's real-world footprint size (metres) into a voxel
@@ -138,11 +139,27 @@ def footprint_radius_voxels(
     ``particle_size_m`` is normalised the same way before converting to
     voxels. Uses the grid's first axis scale (the grid is square in
     practice: same span/resolution on x and y).
+
+    ``shape_factor`` scales the base (sphere-equivalent) radius —
+    ``particle_size_m / 2``, correct as-is for a sphere of that diameter —
+    to account for non-spherical particles. For a cube of edge length
+    ``particle_size_m`` viewed from directly overhead, pass
+    ``shape_factor=sqrt(2)`` to get the *circumscribed* radius
+    (half-diagonal) rather than the inscribed one (half-edge): the
+    inscribed radius makes two face-touching cubes' disks exactly tangent
+    (zero overlap margin) and under-covers a yaw-rotated cube's corners, so
+    once a push clusters particles tightly, the disk union develops gaps a
+    true solid silhouette wouldn't have — the resulting occupancy
+    under-count grows precisely as clustering (reward) improves. The
+    circumscribed radius covers rotated corners under any yaw and gives
+    face-touching neighbours a comfortable overlap margin
+    (2 * r_circumscribed ≈ 1.41 * edge > edge). Default 1.0 (sphere / no
+    adjustment).
     """
     axes = get_grid_axes(len(resolution))
     span = bounds[f'{axes[0]}_max'] - bounds[f'{axes[0]}_min']
     voxels_per_unit = (resolution[0] - 1) / span
-    radius_norm = 0.5 * particle_size_m / global_scale
+    radius_norm = 0.5 * particle_size_m / global_scale * shape_factor
     return radius_norm * voxels_per_unit
 
 

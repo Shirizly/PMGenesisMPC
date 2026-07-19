@@ -199,6 +199,30 @@ def save_yaml(data, filename):
         yaml.dump(data, outfile, default_flow_style=False)
 
 
+def write_video_frame(obs, video_recorder):
+    """Write one BGR frame (the RGB channels of an env obs array) to a video writer.
+
+    Shared by every env wrapper / MPC module that records rollout videos
+    (env.genesis_env.GenesisEnv.step, simple_mpc.genesis_oracle.GenesisOracleEnv.step,
+    simple_mpc.oracle_mpc.run_oracle_mpc), so the obs->BGR conversion and the
+    writer-vs-[writer] convention live in exactly one place.
+
+    Parameters
+    ----------
+    obs : (H, W, C>=3) array — channels [0:3] are RGB in [0, 1].
+    video_recorder : a cv2.VideoWriter-like object, or a length-1 list
+        wrapping one (the list form lets callers swap/release the writer
+        without re-threading it through a call chain). No-op if None.
+    """
+    if video_recorder is None:
+        return
+    writer = video_recorder[0] if isinstance(video_recorder, list) else video_recorder
+    bgr = np.ascontiguousarray(
+        (np.clip(obs[..., :3], 0.0, 1.0) * 255).astype(np.uint8)[..., ::-1]
+    )
+    writer.write(bgr)
+
+
 def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False

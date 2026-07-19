@@ -44,12 +44,12 @@ dataset:
 mpc:
   optimizer: 'cem'            # try --optimizer mppi for a second pass later
 
-  n_mpc: 5                    # "a sequence of 5 actions"
+  n_mpc: 10                    # "a sequence of 10 actions"
   n_look_ahead: 1              # "no look_ahead"
   n_envs: 256                  # benchmarked best throughput (Genesis/benchmark_n_envs.py)
-  n_sample: 256                 # == n_envs: exactly one candidate per env, no
+  n_sample: 512                 # == n_envs: exactly one candidate per env, no
                                  # sequential re-batching within an iteration
-  n_opt_iter: 10                # "10 iterations per step"
+  n_opt_iter: 5                # "5 iterations per step"
 
   rollout_settle_steps: 50      # half of dataset.settle_steps (100), per plan
   cost_mode: 'terminal'         # irrelevant with n_look_ahead=1, kept explicit
@@ -90,10 +90,10 @@ mpc:
     target_char: 'T'           # "goal is letter T"
 
   output_dir: 'outputs/oracle_mpc_test'
-  video_fps: 2
+  video_fps: 1.0
 
 # "5 tries" — independent episodes; each reset()s the box and re-scales the
 # goal to the fresh material footprint before planning.
 episodes:
-  n_episodes: 5
+  n_episodes: 3
   random_seed_base: 0

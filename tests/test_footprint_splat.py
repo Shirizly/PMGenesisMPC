@@ -49,6 +49,35 @@ def test_footprint_radius_voxels_scales_with_particle_size():
     assert abs(r_large - 2.0 * r_small) < 1e-6
 
 
+def test_footprint_radius_voxels_shape_factor_scales_radius():
+    import math
+    global_scale = 0.6
+    r_sphere = footprint_radius_voxels(0.005, global_scale, BOUNDS, RES)
+    r_cube = footprint_radius_voxels(0.005, global_scale, BOUNDS, RES, shape_factor=math.sqrt(2.0))
+    assert abs(r_cube - r_sphere * math.sqrt(2.0)) < 1e-6
+
+
+def test_cube_circumscribed_radius_closes_touching_gap():
+    """Two face-touching cubes (centers one edge-length apart) must have
+    overlapping footprint disks under the circumscribed (shape_factor=sqrt(2))
+    radius, unlike the plain half-edge radius which is exactly tangent
+    (zero overlap) — this is the mechanism behind the growing dense-vs-
+    footprint reward gap fixed for cube-shaped material."""
+    import math
+    global_scale = 0.6
+    edge = 0.005
+    r_inscribed = footprint_radius_voxels(edge, global_scale, BOUNDS, RES)
+    r_circumscribed = footprint_radius_voxels(edge, global_scale, BOUNDS, RES,
+                                              shape_factor=math.sqrt(2.0))
+
+    span = BOUNDS["x_max"] - BOUNDS["x_min"]
+    voxels_per_unit = (RES[0] - 1) / span
+    touching_distance_voxels = (edge / global_scale) * voxels_per_unit
+
+    assert 2 * r_inscribed <= touching_distance_voxels + 1e-6      # exactly tangent, no margin
+    assert 2 * r_circumscribed > touching_distance_voxels           # comfortable overlap
+
+
 def test_genesis_particles_to_cam3d_matches_action_convention():
     from transforms.functional import genesis_action_to_cam3d
 

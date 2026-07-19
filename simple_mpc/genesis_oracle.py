@@ -11,15 +11,25 @@ is fixed at ``build()``, so a separate 1-env "real" sim plus a K-env
     truth, and the overhead camera is bound to it via
     ``scene.add_camera(env_idx=0)`` + ``VisOptions(rendered_envs_idx=[0])``,
     so ``render()`` only ever sees env 0.
-  - All K envs (including env 0) serve as rollout workers during planning:
-    ``rollout_candidates`` first broadcasts env 0's particle state to every
-    env (``SandboxManipulation.broadcast_state_from_env``), then each env
-    executes a *different* candidate action sequence via the already-batched
-    ``execute_action(p_start[K,3], p_stop[K,3], angle[K])`` path.
-  - Executing the winning action (``step()``) broadcasts it to *all* K envs
-    and steps them in lockstep, so every env stays in an identical state
-    between MPC steps — the realized outcome should exactly match the
-    winning rollout, which doubles as a state-sync correctness check.
+  - All K envs (including env 0!) serve as rollout workers during planning:
+    ``rollout_candidates`` restores an explicit, immutable snapshot (taken
+    once per MPC step via ``snapshot_particles()``) onto every env, then each
+    env executes a *different* candidate action sequence via the
+    already-batched ``execute_action(p_start[K,3], p_stop[K,3], angle[K])``
+    path. Restoring from a frozen snapshot — not from env 0's live state — is
+    load-bearing: env 0 is itself one of the K candidate workers and gets a
+    real (usually different) candidate action applied to it every rollout, so
+    its live state drifts across optimizer iterations; broadcasting from a
+    frozen snapshot instead of env 0's live state is what keeps every
+    iteration's "current state" correct.
+  - Executing the winning action (``step()``) requires the caller to
+    ``restore_snapshot()`` first (undoing whatever the last candidate/re-roll
+    rollout did to env 0), then broadcasts the action to *all* K envs and
+    steps them in lockstep, so every env stays in an identical state between
+    MPC steps — the realized outcome should closely match a full-fidelity
+    re-roll of the same action from the same snapshot (see
+    ``rollout_candidates(..., use_rollout_fidelity=False)``), which doubles
+    as a state-sync / determinism correctness check.
 
 See docs/oracle_mpc_plan.md §1.1–1.2 for the full design rationale.
 """
@@ -39,6 +49,7 @@ if _REPO_ROOT not in sys.path:
 
 from Genesis.sandbox_manipulation_clean import SandboxManipulation
 from env.genesis_env import GenesisEnv
+from utils import write_video_frame
 from transforms.functional import (
     genesis_particles_to_cam3d,
     footprint_radius_voxels,
@@ -89,6 +100,12 @@ class GenesisOracleEnv:
         mat = genesis_cfg['material']
         psize = mat['particle_size']
         self._particle_size_m = float(psize) if isinstance(psize, (int, float)) else float(np.mean(psize))
+        # Footprint-splat shape correction (see transforms.functional.footprint_radius_voxels):
+        # a sphere's silhouette radius is exactly particle_size/2 (factor 1.0);
+        # a cube viewed from overhead needs the circumscribed (half-diagonal)
+        # radius, sqrt(2) larger, to cover rotated corners and avoid gaps
+        # between touching neighbours once a push clusters particles tightly.
+        self._footprint_shape_factor = math.sqrt(2.0) if mat.get('shape') == 'cube' else 1.0
 
         # Overhead camera bound to env 0 only (env_idx=0 offsets the camera
         # pose by envs_offset[0]; rendered_envs_idx=[0] above keeps the
@@ -163,6 +180,11 @@ class GenesisOracleEnv:
         Because every env receives the identical action from an identical
         (post-broadcast) state, all K envs end this call in the same state —
         keeping them synchronized for the next planning phase.
+
+        If ``video_recorder`` is given, three frames are written: right after
+        the plate reaches the push start (about to sweep), right after the
+        sweep ends (about to lift), and the final post-action state — so the
+        action taken is visible, not just the before/after box state.
         """
         import genesis as gs
 
@@ -178,18 +200,16 @@ class GenesisOracleEnv:
                                 ).unsqueeze(0).expand(self.n_envs, 3).contiguous()
         angle_t = torch.full((self.n_envs,), angle, dtype=torch.float32, device=gs.device)
 
-        self._sim.execute_action(p_start, p_stop, angle_t)
+        def _on_phase(phase: str) -> None:
+            if video_recorder is not None and phase in ('post_lower', 'post_sweep'):
+                write_video_frame(self.render(), video_recorder)
+
+        self._sim.execute_action(p_start, p_stop, angle_t, on_phase=_on_phase)
         self._sim._settle_steps         = self._real_settle_steps
         self._sim._clearance_ctrl_steps = self._real_clearance_steps
         self._sim.update_material_state()
         obs = self.render()
-
-        if video_recorder is not None:
-            writer = video_recorder[0] if isinstance(video_recorder, list) else video_recorder
-            bgr = np.ascontiguousarray(
-                (np.clip(obs[..., :3], 0.0, 1.0) * 255).astype(np.uint8)[..., ::-1]
-            )
-            writer.write(bgr)
+        write_video_frame(obs, video_recorder)
 
         return obs
 
@@ -226,10 +246,36 @@ class GenesisOracleEnv:
     #  Planning API — used by simple_mpc.oracle_mpc                        #
     # ------------------------------------------------------------------ #
 
+    def snapshot_particles(self) -> dict:
+        """Capture env 0's CURRENT particle state as an immutable snapshot.
+
+        Call exactly once at the start of planning for a given MPC step,
+        BEFORE any ``rollout_candidates()`` calls. Env 0 participates in the
+        candidate pool like any other env during rollouts (see class
+        docstring), so its live state drifts after the first rollout —
+        ``rollout_candidates`` and ``restore_snapshot`` restore from this
+        frozen snapshot instead of env 0's live state, so "current state"
+        stays correct across every iteration.
+        """
+        return {
+            'pos':  self._sim._particle_state[0:1, :, 0:3].clone(),
+            'quat': self._sim._particle_state[0:1, :, 3:7].clone(),
+        }
+
+    def restore_snapshot(self, snapshot: dict) -> None:
+        """Broadcast a snapshot (from ``snapshot_particles``) onto every env,
+        undoing any drift caused by candidate rollouts — including to env 0
+        itself. Call this before ``step()`` to make sure the real action is
+        executed from the true current state, not from whatever state the
+        last planning rollout left env 0 in."""
+        self._sim.set_particle_state(snapshot['pos'], snapshot['quat'])
+
     def rollout_candidates(
         self,
         act_seqs: torch.Tensor,
+        snapshot: dict,
         collect_intermediate: bool = False,
+        use_rollout_fidelity: bool = True,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         """
         Roll out one candidate action sequence per env, in parallel.
@@ -238,22 +284,33 @@ class GenesisOracleEnv:
         ----------
         act_seqs : (n_envs, n_ahead, 4) tensor — [sx, sy, ex, ey] per step,
             one independent candidate sequence per env.
+        snapshot : dict from ``snapshot_particles()`` — the frozen state to
+            restore onto every env before rolling out (NOT env 0's live
+            state, which may already have drifted from a previous rollout —
+            see class docstring).
         collect_intermediate : bool
             If True, also return the post-push particle positions after
             *every* horizon step (needed for ``cost_mode='discounted'`` in
             ``oracle_mpc``), not just the terminal state.
+        use_rollout_fidelity : bool
+            If True (default, used during optimization), uses the reduced
+            ``rollout_*`` settle/clearance step budgets for speed. If False,
+            uses the same full-fidelity budgets as the real ``step()`` —
+            pass this for a final re-roll of the winning sequence, so the
+            "predicted vs actual" comparison isn't confounded by a fidelity
+            difference on top of any genuine model gap (there is none here:
+            the model *is* the simulator).
 
         Returns
         -------
         terminal_pos : (n_envs, n_particles, 3) world-frame particle
-            positions after the full sequence, using the reduced-fidelity
-            ``rollout_*`` step budgets.
+            positions after the full sequence.
         step_positions : list[(n_envs, n_particles, 3)], length n_ahead —
             only returned when ``collect_intermediate=True``.
 
-        Restores env 0's state onto all envs first, so this is safe to call
+        Restores the snapshot onto all envs first, so this is safe to call
         repeatedly across optimizer iterations without executing any real
-        step.
+        step, and without corrupting env 0's true state.
         """
         import genesis as gs
 
@@ -261,9 +318,13 @@ class GenesisOracleEnv:
         if n_envs != self.n_envs:
             raise ValueError(f"act_seqs batch dim {n_envs} != n_envs {self.n_envs}")
 
-        self._sim.broadcast_state_from_env(0)
-        self._sim._settle_steps         = self._rollout_settle_steps
-        self._sim._clearance_ctrl_steps = self._rollout_clearance_steps
+        self.restore_snapshot(snapshot)
+        if use_rollout_fidelity:
+            self._sim._settle_steps         = self._rollout_settle_steps
+            self._sim._clearance_ctrl_steps = self._rollout_clearance_steps
+        else:
+            self._sim._settle_steps         = self._real_settle_steps
+            self._sim._clearance_ctrl_steps = self._real_clearance_steps
 
         z_op = float(self._sim._operation_height)
         step_positions = []
@@ -328,9 +389,10 @@ class GenesisOracleEnv:
 
     def default_footprint_radius_voxels(self, grid_bounds: dict, grid_res: tuple) -> float:
         """Particle-footprint voxel radius for ``particles_to_occ``, derived
-        from the configured (scalar) particle size."""
+        from the configured (scalar) particle size and material shape."""
         return footprint_radius_voxels(
-            self._particle_size_m, self.global_scale, grid_bounds, grid_res)
+            self._particle_size_m, self.global_scale, grid_bounds, grid_res,
+            shape_factor=self._footprint_shape_factor)
 
     def destroy(self) -> None:
         self._sim.destroy()

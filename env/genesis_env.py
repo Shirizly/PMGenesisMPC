@@ -32,6 +32,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from Genesis.sandbox_manipulation_clean import SandboxManipulation
+from utils import write_video_frame
 
 
 class GenesisEnv:
@@ -243,8 +244,11 @@ class GenesisEnv:
         action : (4,) array-like
             [sx, sy, ex, ey] in world-frame metres (x/y horizontal plane).
         video_recorder : list[cv2.VideoWriter] | None
-            If provided, the post-action RGB frame is written to
-            ``video_recorder[0]`` as a BGR uint8 image.
+            If provided, three RGB frames are written as BGR uint8 images:
+            right after the plate reaches the push start (about to sweep),
+            right after the sweep ends (about to lift), and the final
+            post-action state — so the action taken is visible in the video,
+            not just the before/after box state.
 
         Returns
         -------
@@ -271,17 +275,15 @@ class GenesisEnv:
         angle_t = torch.tensor([angle],          dtype=torch.float32,
                                 device=gs.device)
 
-        self._sim.execute_action(p_start, p_stop, angle_t)
+        def _on_phase(phase: str) -> None:
+            if video_recorder is not None and phase in ('post_lower', 'post_sweep'):
+                write_video_frame(self.render(), video_recorder)
+
+        self._sim.execute_action(p_start, p_stop, angle_t, on_phase=_on_phase)
         self._sim._settle_steps = self.settle_steps   # honour per-experiment override
         self._sim.update_material_state()
         obs = self.render()
-
-        if video_recorder is not None:
-            writer = video_recorder[0] if isinstance(video_recorder, list) else video_recorder
-            bgr = np.ascontiguousarray(
-                (np.clip(obs[..., :3], 0.0, 1.0) * 255).astype(np.uint8)[..., ::-1]
-            )
-            writer.write(bgr)
+        write_video_frame(obs, video_recorder)
 
         return obs
 
