@@ -61,6 +61,38 @@ def test_fit_recovers_linear_map():
     assert (pred - phi_t1).pow(2).mean() < 1e-6
 
 
+def test_prior_used_for_empty_bins():
+    D = 4
+    prior = torch.randn(3, D, D)
+    phi_t = torch.randn(5, D)
+    phi_t1 = torch.randn(5, D)
+    bins = torch.zeros(5, dtype=torch.long)  # only bin 0 has data
+    A, counts = fit_per_action_operators(
+        phi_t, phi_t1, bins, n_bins=3, lam=1e-4, prior_A=prior
+    )
+    # unseen bins keep the source (prior) operator, not identity
+    assert torch.allclose(A[1], prior[1])
+    assert torch.allclose(A[2], prior[2])
+
+
+def test_prior_pulls_estimate_toward_source():
+    torch.manual_seed(1)
+    N, D = 60, 5
+    phi_t = torch.randn(N, D)
+    phi_t1 = torch.randn(N, D)  # unrelated -> data alone has no strong preference
+    bins = torch.zeros(N, dtype=torch.long)
+    prior = torch.randn(1, D, D)
+    # strong prior weight -> operator close to the source prior
+    A_strong, _ = fit_per_action_operators(
+        phi_t, phi_t1, bins, n_bins=1, lam=1e6, prior_A=prior
+    )
+    # weak prior weight -> operator close to the data least-squares solution
+    A_weak, _ = fit_per_action_operators(
+        phi_t, phi_t1, bins, n_bins=1, lam=1e-6, prior_A=prior
+    )
+    assert (A_strong[0] - prior[0]).abs().mean() < (A_weak[0] - prior[0]).abs().mean()
+
+
 def test_empty_bin_is_identity():
     N, D = 10, 4
     phi_t = torch.randn(N, D)

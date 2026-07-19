@@ -1,0 +1,25 @@
+# Larger single-physics Genesis dataset for the DMDc falsification baseline
+# (dmdc_baseline.py). 500 files x ~28.6 = ~14,300 single-push transitions (NOT
+# trajectories), all one physics/geometry group (cube n30, size 0.012,
+# friction 0.12, density 750). Because there is only one physics group, the
+# registry's physics-group split can't form a test set — run dmdc_baseline.py
+# with --split by-file (or the default --split auto, which detects this and
+# holds out whole files). test_pct/val_pct are 0 so the whole set pools into
+# "train" for that file-level holdout.
+
+type: genesis
+
+paths:
+  - ignore/oneset/cube/n30/size0.012
+
+val_pct: 0
+test_pct: 0
+
+resolution_scale: 0.5   # box 0.128 m -> 64x64 grid
+include_physics: true
+
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

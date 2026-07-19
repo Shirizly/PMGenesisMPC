@@ -165,6 +165,13 @@ class SandboxManipulation:
             viewer_options = None
 
         rigid_cfg = self._config.get("rigid_options", {})
+        # rendered_envs_idx: restrict which parallel envs the (non-batched)
+        # rasterizer considers, e.g. [0] so an overhead camera bound to env 0
+        # (via add_camera(env_idx=0)) only ever sees that env's geometry —
+        # needed by GenesisOracleEnv, which runs n_envs>1 rollout workers
+        # alongside a single "real" env. None (default) renders all envs,
+        # matching prior single-env behaviour.
+        rendered_envs_idx = self._sim_params.get('rendered_envs_idx', None)
         self._scene = gs.Scene(
             sim_options=gs.options.SimOptions(
                 dt       = self._config["simulation"].get('dt', 4e3),
@@ -184,6 +191,7 @@ class SandboxManipulation:
             viewer_options = viewer_options,
             vis_options=gs.options.VisOptions(
                 show_link_frame=self._debug and self._viewer_type == "observer",
+                rendered_envs_idx=rendered_envs_idx,
             ),
             show_viewer=self._debug or self._viewer_type is not None
         )
@@ -631,7 +639,38 @@ class SandboxManipulation:
 
         self._particle_state[:, :, 0:3] = self._get_particle_positions()
         self._particle_state[:, :, 3:] = self._get_particle_quats()
-    
+
+    def broadcast_state_from_env(self, src_env: int = 0) -> None:
+        """
+        Copy particle pose (position + quaternion) from environment
+        ``src_env`` to every environment, and zero particle velocities.
+
+        Used by multi-candidate rollout planners (see
+        ``simple_mpc.genesis_oracle.GenesisOracleEnv``) to reset all
+        ``n_envs`` copies to a common starting state before evaluating a new
+        batch of candidate pushes. Requires ``self._particle_state`` to be
+        current (i.e. ``update_material_state()`` was called after the last
+        push). Does not touch the plate: ``execute_action`` teleports the
+        plate to its start pose on every call, so no explicit plate reset is
+        needed between rollouts.
+        """
+        envs_idx = torch.arange(self._n_envs, device=gs.device)
+        src_pos  = self._particle_state[src_env:src_env + 1, :, 0:3]   # (1, n_p, 3)
+        src_quat = self._particle_state[src_env:src_env + 1, :, 3:7]   # (1, n_p, 4)
+        for particle_idx, particle in enumerate(self.material):
+            particle.set_pos(
+                src_pos[:, particle_idx, :].expand(self._n_envs, 3), envs_idx=envs_idx)
+            particle.set_quat(
+                src_quat[:, particle_idx, :].expand(self._n_envs, 4), envs_idx=envs_idx)
+        if self._particle_dofs_idx.numel() > 0:
+            self._scene.rigid_solver.set_dofs_velocity(
+                torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
+                dofs_idx=self._particle_dofs_idx,
+                skip_forward=True,
+            )
+        self._particle_state[:] = self._particle_state[src_env:src_env + 1].expand(
+            self._n_envs, -1, -1)
+
     def plate_velocity_translation(
             self,
             p_start,

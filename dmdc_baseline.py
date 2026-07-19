@@ -166,14 +166,26 @@ def fit_per_action_operators(
     bins: torch.Tensor,  # [N] long
     n_bins: int,
     lam: float = 1e-4,
+    prior_A: torch.Tensor | None = None,  # [n_bins,D,D] shrink target
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    For each bin b:  A_b = argmin ||A phi_t - phi_t1||^2 + lam ||A||^2
-                         = Y X^T (X X^T + lam I)^{-1}
-    Returns A: [n_bins, D, D] (identity for empty bins), counts: [n_bins].
+    For each bin b, ridge-regularised least squares toward a prior operator:
+
+        A_b = argmin ||A phi_t - phi_t1||^2 + lam ||A - A0_b||^2
+            = (Y X^T + lam A0_b)(X X^T + lam I)^{-1}
+
+    ``prior_A`` supplies the shrink target A0 (the transfer-learning prior — e.g.
+    operators fitted on a source domain). When ``prior_A is None`` the target is
+    0 (plain ridge, the original behaviour). Empty target bins fall back to the
+    prior operator when one is given, else to identity.
+
+    Returns A: [n_bins, D, D], counts: [n_bins].
     """
     N, D = phi_t.shape
-    A = torch.eye(D).expand(n_bins, D, D).clone()
+    if prior_A is not None:
+        A = prior_A.clone()  # empty/unseen bins keep the source operator
+    else:
+        A = torch.eye(D).expand(n_bins, D, D).clone()
     counts = torch.zeros(n_bins, dtype=torch.long)
     I = torch.eye(D, dtype=torch.float64)
 
@@ -185,8 +197,11 @@ def fit_per_action_operators(
             continue
         X = phi_t[mask].T.double()  # [D, nb]
         Y = phi_t1[mask].T.double()  # [D, nb]
-        # A^T solves (X X^T + lam I) A^T = X Y^T
-        At = torch.linalg.solve(X @ X.T + lam * I, X @ Y.T)
+        # A^T solves (X X^T + lam I) A^T = X Y^T + lam A0^T
+        rhs = X @ Y.T
+        if prior_A is not None:
+            rhs = rhs + lam * prior_A[b].T.double()
+        At = torch.linalg.solve(X @ X.T + lam * I, rhs)
         A[b] = At.T.float()
 
     under = int((counts.gt(0) & counts.lt(D)).sum())
@@ -460,6 +475,117 @@ def _encode(data: TransitionArrays, n_fourier: int, binner: ActionBinner):
     return phi_t, phi_t1, bins
 
 
+def _ratios(A, phi_te, phi1_te, bins_te, slices) -> dict[str, float]:
+    """group -> model/persistence MSE ratio on held-out test."""
+    return {
+        name: (mse / mp if mp > 0 else float("nan"))
+        for name, (mse, mp) in one_step_report(A, phi_te, phi1_te, bins_te, slices).items()
+    }
+
+
+def _run_transfer(args, slices, binner, target_train, target_test) -> None:
+    """
+    Transfer-learning comparison, source (``--transfer-from``) -> target.
+
+    Reports, on the SAME target held-out test, three regimes:
+      in-domain : operators fitted only on target train (ridge -> 0)
+      zero-shot : source operators applied directly to target (no target fit)
+      transfer  : target fit with a ridge PRIOR toward the source operators
+                  (strength --transfer-weight)
+    Optionally caps target train via --target-max-train to expose the
+    data-scarcity regime where a prior actually helps.
+
+    ``target_train``/``target_test`` are the encodings from the SINGLE split
+    made in main(), so train and eval stay disjoint (no leakage).
+    """
+    phi_t_te, phi_t1_te, bins_te = target_test
+    pt_t, pt_t1, pt_b = target_train
+
+    # --- source operators (fit on the transfer-from dataset's train split) ---
+    src_train, _src_test, src_mode = _load_train_test(
+        args.transfer_from, "auto", args.holdout_frac, args.max_samples
+    )
+    print(f"\n[transfer] source={args.transfer_from} split={src_mode} "
+          f"train={len(src_train.episode_ids)}")
+    ps_t, ps_t1, ps_b = _encode(src_train, args.n_fourier, binner)
+    A_src, _ = fit_per_action_operators(ps_t, ps_t1, ps_b, binner.n_bins, lam=args.lam)
+
+    # --- target train (optionally subsampled to simulate scarce target data) ---
+    n_tgt = pt_t.shape[0]
+    if args.target_max_train is not None and args.target_max_train < n_tgt:
+        keep = torch.randperm(n_tgt)[: args.target_max_train]
+        pt_t, pt_t1, pt_b = pt_t[keep], pt_t1[keep], pt_b[keep]
+    print(f"[transfer] target train used = {pt_t.shape[0]} "
+          f"(of {n_tgt}), weight={args.transfer_weight}")
+
+    A_in, _ = fit_per_action_operators(pt_t, pt_t1, pt_b, binner.n_bins, lam=args.lam)
+    A_xf, _ = fit_per_action_operators(
+        pt_t, pt_t1, pt_b, binner.n_bins, lam=args.transfer_weight, prior_A=A_src
+    )
+
+    r_in = _ratios(A_in, phi_t_te, phi_t1_te, bins_te, slices)
+    r_zs = _ratios(A_src, phi_t_te, phi_t1_te, bins_te, slices)
+    r_xf = _ratios(A_xf, phi_t_te, phi_t1_te, bins_te, slices)
+
+    print("\n== transfer comparison (ratio = model MSE / persistence MSE, <1 = signal) ==")
+    print(f"  {'group':10s}  {'in-domain':>10s}  {'zero-shot':>10s}  {'transfer':>10s}")
+    for name in r_in:
+        print(f"  {name:10s}  {r_in[name]:10.3f}  {r_zs[name]:10.3f}  {r_xf[name]:10.3f}")
+    better = sum(r_xf[n] < r_in[n] - 1e-3 for n in r_in)
+    print(f"\ntransfer beats in-domain on {better}/{len(r_in)} groups "
+          f"(lower is better).")
+
+
+def _load_train_test(
+    cfg_path: str, split_mode: str, holdout_frac: float, max_samples: int | None
+) -> tuple[TransitionArrays, TransitionArrays, str]:
+    """
+    Return (train_data, test_data, mode_used).
+
+    - "registry": the genesis physics-group split (proper when several physics
+      groups exist — keeps equivalent runs off both sides).
+    - "by-file":  pool everything and hold out whole runs/files. Correct for
+      single-physics datasets (one physics group => registry leaves test empty),
+      where files are independent random-pile collections so a file-level
+      holdout leaks nothing.
+    - "auto": try registry; if it yields no test transitions, fall back to by-file.
+    """
+    def _registry():
+        train = load_transition_arrays(cfg_path, "train", max_samples)
+        try:
+            test = load_transition_arrays(cfg_path, "test", max_samples)
+        except (ValueError, FileNotFoundError):
+            test = None
+        return train, test
+
+    if split_mode in ("registry", "auto"):
+        train, test = _registry()
+        if test is not None and len(test.episode_ids) > 0:
+            return train, test, "registry"
+        if split_mode == "registry":
+            raise SystemExit(
+                "registry split produced no test set (single physics group?). "
+                "Re-run with --split by-file."
+            )
+
+    # by-file: pool all data (config should set test_pct/val_pct = 0 so the whole
+    # set lands in "train"), then hold out whole files by episode id.
+    pooled = load_transition_arrays(cfg_path, "train", max_samples)
+    tr_mask, te_mask = split_by_episode(pooled, holdout_frac=holdout_frac)
+
+    def _subset(mask: torch.Tensor) -> TransitionArrays:
+        return TransitionArrays(
+            occ_t=pooled.occ_t[mask],
+            occ_t1=pooled.occ_t1[mask],
+            actions=pooled.actions[mask],
+            episode_ids=pooled.episode_ids[mask],
+            workspace_min=pooled.workspace_min,
+            workspace_max=pooled.workspace_max,
+        )
+
+    return _subset(tr_mask), _subset(te_mask), "by-file"
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("dataset_cfg", help="configs/dataset/*.yaml")
@@ -469,20 +595,30 @@ def main() -> None:
     p.add_argument("--n-start-bins", type=int, default=4,
                    help="start-cell bins per axis (n^2 cells); coarser for small data")
     p.add_argument("--n-angle-bins", type=int, default=8, help="push-angle bins")
+    p.add_argument("--split", choices=("auto", "registry", "by-file"), default="auto",
+                   help="auto (registry, else file-level holdout) | registry | by-file")
+    p.add_argument("--holdout-frac", type=float, default=0.2,
+                   help="fraction of files held out for test in by-file mode")
     p.add_argument("--max-samples", type=int, default=None,
                    help="cap transitions per split (debugging)")
+    p.add_argument("--transfer-from", default=None,
+                   help="source dataset config; fit operators there and use them "
+                        "as a ridge prior for this (target) dataset")
+    p.add_argument("--transfer-weight", type=float, default=1e-2,
+                   help="ridge strength toward the source operators (transfer mode)")
+    p.add_argument("--target-max-train", type=int, default=None,
+                   help="cap target train transitions (transfer mode) to expose "
+                        "the data-scarcity regime")
     args = p.parse_args()
 
     slices = descriptor_slices(args.n_fourier)
     D = slices["_total"].stop
     print(f"descriptor dim D = {D}  (n_fourier={args.n_fourier})")
 
-    # Train/test come from the registry's physics-group split (see
-    # PileSweepData._filter_split), which keeps equivalent runs out of both
-    # sides — the proper split for this codebase.
-    train_data = load_transition_arrays(args.dataset_cfg, "train", args.max_samples)
-    test_data = load_transition_arrays(args.dataset_cfg, "test", args.max_samples)
-    print(f"transitions: train={len(train_data.episode_ids)} "
+    train_data, test_data, mode = _load_train_test(
+        args.dataset_cfg, args.split, args.holdout_frac, args.max_samples
+    )
+    print(f"split={mode}  transitions: train={len(train_data.episode_ids)} "
           f"test={len(test_data.episode_ids)}  grid={tuple(train_data.occ_t.shape[1:])}")
     print(f"workspace (m): {train_data.workspace_min} .. {train_data.workspace_max}")
 
@@ -490,9 +626,19 @@ def main() -> None:
         train_data.workspace_min, train_data.workspace_max,
         n_start_bins=args.n_start_bins, n_angle_bins=args.n_angle_bins,
     )
+    print(f"bins: {binner.n_bins}  (target samples/bin >> D={D} for a reliable fit)")
 
     phi_t, phi_t1, bins = _encode(train_data, args.n_fourier, binner)
     phi_t_te, phi_t1_te, bins_te = _encode(test_data, args.n_fourier, binner)
+
+    if args.transfer_from:
+        _run_transfer(
+            args, slices, binner,
+            (phi_t, phi_t1, bins), (phi_t_te, phi_t1_te, bins_te),
+        )
+        ratio = diagnose_contiguity(phi_t_te, phi_t1_te, test_data.episode_ids)
+        print(f"\ncontiguity ratio (test) = {ratio:.3f}")
+        return
 
     A, counts = fit_per_action_operators(
         phi_t, phi_t1, bins, binner.n_bins, lam=args.lam

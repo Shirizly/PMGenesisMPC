@@ -105,6 +105,15 @@ class OccupancyReward:
 
         return torch.from_numpy(score).to(device=device, dtype=torch.float32)
 
+    def goal_occupancy_mask(self, subgoal: np.ndarray) -> torch.Tensor:
+        """Public alias for ``_subgoal_mask_to_occupancy`` — the binary goal
+        occupancy grid (1 = inside goal), independent of ``empty_penalty``.
+        Used by ``simple_mpc.oracle_mpc`` as the ``target`` for occupancy
+        losses (e.g. ``eulerian_combined``) that need a plain 0/1 target
+        rather than the distance-transform-shaped reward from
+        ``compute_score_tensor``."""
+        return self._subgoal_mask_to_occupancy(subgoal)
+
     def _subgoal_mask_to_occupancy(self, subgoal: np.ndarray) -> torch.Tensor:
         """
         Convert pixel-space binary mask to occupancy grid.

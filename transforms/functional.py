@@ -53,9 +53,17 @@ def particles_to_occupancy(
     bounds: Dict[str, float],
     resolution: Tuple[int, ...],
     sigma: float = 0.0,                   # >0 → soft Gaussian splat; 0 → hard voxel
+    footprint_radius: float = 0.0,        # >0 → hard disk splat of this voxel radius
 ) -> torch.Tensor:
     """
     Convert a batch of particle point-clouds to an occupancy grid.
+
+    ``footprint_radius`` (in voxel units) fills every cell within that radius
+    of each particle center, instead of just the single nearest voxel. This
+    matters when particle centers are sparse relative to the grid (e.g. a
+    Lagrangian/particle-based rollout compared against a dense depth-derived
+    occupancy grid) — see ``simple_mpc.genesis_oracle``. Mutually exclusive
+    with ``sigma`` (footprint_radius takes precedence if both are set).
 
     Returns
     -------
@@ -82,7 +90,15 @@ def particles_to_occupancy(
 
     occ = torch.zeros([B] + list(resolution), device=device, dtype=torch.float32)
 
-    if sigma <= 0.0:
+    if footprint_radius > 0.0:
+        # Hard disk splat: fill every voxel within footprint_radius of a particle.
+        grid_pts = _make_grid_coords(resolution, device)  # (*resolution, ndim)
+        r2 = footprint_radius ** 2
+        for b in range(B):
+            diff  = pts_norm[b].unsqueeze(1).unsqueeze(1) - grid_pts.unsqueeze(0)  # (N, *resolution, ndim)
+            dist2 = (diff ** 2).sum(-1)                    # (N, *resolution)
+            occ[b] = (dist2 <= r2).any(dim=0).float()
+    elif sigma <= 0.0:
         # Hard voxel: scatter-add a '1' to each occupied cell
         idx = pts_norm.round().long().clamp(
             torch.zeros(ndim, device=device, dtype=torch.long),
@@ -107,6 +123,29 @@ def particles_to_occupancy(
     return occ  # (B, *resolution)
 
 
+def footprint_radius_voxels(
+    particle_size_m: float,
+    global_scale: float,
+    bounds: Dict[str, float],
+    resolution: Tuple[int, ...],
+) -> float:
+    """
+    Convert a particle's real-world footprint size (metres) into a voxel
+    radius suitable for ``particles_to_occupancy(..., footprint_radius=...)``.
+
+    ``bounds`` are expressed in normalised camera coords (world metres /
+    global_scale, matching ``particles_to_occupancy``'s convention), so
+    ``particle_size_m`` is normalised the same way before converting to
+    voxels. Uses the grid's first axis scale (the grid is square in
+    practice: same span/resolution on x and y).
+    """
+    axes = get_grid_axes(len(resolution))
+    span = bounds[f'{axes[0]}_max'] - bounds[f'{axes[0]}_min']
+    voxels_per_unit = (resolution[0] - 1) / span
+    radius_norm = 0.5 * particle_size_m / global_scale
+    return radius_norm * voxels_per_unit
+
+
 def genesis_action_to_cam3d(
     action: torch.Tensor,
     scale: float,
@@ -118,6 +157,24 @@ def genesis_action_to_cam3d(
     s_3d_cam = torch.cat([sx, -sy, half], dim=1)
     e_3d_cam = torch.cat([ex, -ey, half], dim=1)
     return s_3d_cam, e_3d_cam
+
+
+def genesis_particles_to_cam3d(
+    pos_world: torch.Tensor,   # (..., 3) world-frame [x, y, z] metres
+    scale: float,
+) -> torch.Tensor:
+    """Map world-frame particle positions to normalised Genesis camera coords.
+
+    Same convention as ``genesis_action_to_cam3d`` (overhead camera, x/y
+    horizontal plane): x_n = x/scale, y_n = -y/scale. The table-plane z is
+    fixed at 0.5 since the 2-D occupancy grid (``get_grid_axes(2)``) only
+    ever uses the x/y projection — z is carried along only to keep the
+    3-vector shape ``particles_to_occupancy`` expects.
+    """
+    x = pos_world[..., 0:1] / scale
+    y = -pos_world[..., 1:2] / scale
+    z = torch.full_like(x, 0.5)
+    return torch.cat([x, y, z], dim=-1)
 
 
 def _point_to_segment_distance_xy(

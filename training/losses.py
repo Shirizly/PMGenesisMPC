@@ -22,6 +22,12 @@ where:
     components  : dict[str, float]  — named sub-losses for TensorBoard logging
                                        (detached floats, not tensors)
 
+Some losses (``EulerianCombinedLoss``, ``ScoreMapWeightedLoss``) accept a
+``per_sample: true`` config key; when set, ``total_loss`` is instead an
+unreduced ``Tensor[B]`` (one cost per batch item). This is used by
+sampling-based MPC (``simple_mpc.oracle_mpc``) to rank candidates, not by the
+training loop.
+
 Adding a new loss function
 --------------------------
 1.  Subclass LossFn, implement ``__init__(cfg)`` and
@@ -122,6 +128,12 @@ class EulerianCombinedLoss(LossFn):
         add        0.0  — MSE on the added-material map (pred > current)
         remove     0.0  — MSE on the removed-material map (current > pred)
         bce_pos_weight  1.0  — positive class weight for BCEWithLogitsLoss
+        per_sample      False — if True, ``total_loss`` is returned unreduced
+                                 as a ``(B,)`` tensor (one cost per batch item)
+                                 instead of a scalar. Used by sampling-based
+                                 MPC (simple_mpc.oracle_mpc), which needs a
+                                 per-candidate cost. ``components`` are always
+                                 batch-mean scalars regardless of this flag.
     """
 
     def __init__(self, cfg: dict):
@@ -135,6 +147,7 @@ class EulerianCombinedLoss(LossFn):
         self.w_remove    = float(cfg.get("remove",      0.0))
         pos_weight_val   = float(cfg.get("bce_pos_weight", 1.0))
         self._bce_pw     = pos_weight_val
+        self.per_sample  = bool(cfg.get("per_sample", False))
 
     def __call__(
         self,
@@ -154,52 +167,57 @@ class EulerianCombinedLoss(LossFn):
 
         probs = torch.sigmoid(logits)
 
-        # --- individual terms ---
-        mse = F.mse_loss(probs, targets)
+        # --- individual terms, computed per-sample (B,) then optionally
+        # reduced to a scalar below; numerically identical to the old
+        # full-batch-mean formulas when per_sample=False, since H,W are
+        # fixed across the batch. ---
+        mse_ps = F.mse_loss(probs, targets, reduction="none").mean(dim=(1, 2))
 
         pw  = torch.tensor([self._bce_pw], dtype=torch.float32, device=dev)
-        bce = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pw)
+        bce_ps = F.binary_cross_entropy_with_logits(
+            logits, targets, pos_weight=pw, reduction="none").mean(dim=(1, 2))
 
-        dice = _soft_dice_loss(logits, targets)
+        dice_ps = _soft_dice_loss(logits, targets, reduce=False)
 
-        sharpness = (probs * (1.0 - probs)).mean()
+        sharpness_ps = (probs * (1.0 - probs)).mean(dim=(1, 2))
 
-        tv = (
-            (probs[:, 1:, :] - probs[:, :-1, :]).abs().mean()
-            + (probs[:, :, 1:] - probs[:, :, :-1]).abs().mean()
+        tv_ps = (
+            (probs[:, 1:, :] - probs[:, :-1, :]).abs().mean(dim=(1, 2))
+            + (probs[:, :, 1:] - probs[:, :, :-1]).abs().mean(dim=(1, 2))
         )
 
         n_px  = float(targets[0].numel())
-        mass  = (probs.sum(dim=(1, 2)) - targets.sum(dim=(1, 2))).abs().mean() / n_px
+        mass_ps = (probs.sum(dim=(1, 2)) - targets.sum(dim=(1, 2))).abs() / n_px
 
         pred_add   = (probs   - current).clamp_min(0.0)
         target_add = (targets - current).clamp_min(0.0)
         pred_rem   = (current - probs  ).clamp_min(0.0)
         target_rem = (current - targets).clamp_min(0.0)
-        add_loss    = F.mse_loss(pred_add,   target_add)
-        remove_loss = F.mse_loss(pred_rem,   target_rem)
+        add_ps    = F.mse_loss(pred_add, target_add, reduction="none").mean(dim=(1, 2))
+        remove_ps = F.mse_loss(pred_rem, target_rem, reduction="none").mean(dim=(1, 2))
 
-        total = (
-            self.w_mse       * mse
-            + self.w_bce       * bce
-            + self.w_dice      * dice
-            + self.w_sharpness * sharpness
-            + self.w_tv        * tv
-            + self.w_mass      * mass
-            + self.w_add       * add_loss
-            + self.w_remove    * remove_loss
+        total_ps = (
+            self.w_mse       * mse_ps
+            + self.w_bce       * bce_ps
+            + self.w_dice      * dice_ps
+            + self.w_sharpness * sharpness_ps
+            + self.w_tv        * tv_ps
+            + self.w_mass      * mass_ps
+            + self.w_add       * add_ps
+            + self.w_remove    * remove_ps
         )
 
         components = {
-            "mse":       mse.item(),
-            "bce":       bce.item(),
-            "dice":      dice.item(),
-            "sharpness": sharpness.item(),
-            "tv":        tv.item(),
-            "mass":      mass.item(),
-            "add":       add_loss.item(),
-            "remove":    remove_loss.item(),
+            "mse":       mse_ps.mean().item(),
+            "bce":       bce_ps.mean().item(),
+            "dice":      dice_ps.mean().item(),
+            "sharpness": sharpness_ps.mean().item(),
+            "tv":        tv_ps.mean().item(),
+            "mass":      mass_ps.mean().item(),
+            "add":       add_ps.mean().item(),
+            "remove":    remove_ps.mean().item(),
         }
+        total = total_ps if self.per_sample else total_ps.mean()
         return total, components
 
 
@@ -234,9 +252,59 @@ def _soft_dice_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     eps: float = 1e-6,
+    reduce: bool = True,
 ) -> torch.Tensor:
     probs = torch.sigmoid(logits)
     dims  = tuple(range(1, probs.ndim))
     inter = (probs * targets).sum(dim=dims)
     denom = probs.sum(dim=dims) + targets.sum(dim=dims)
-    return (1.0 - (2.0 * inter + eps) / (denom + eps)).mean()
+    per_sample = 1.0 - (2.0 * inter + eps) / (denom + eps)
+    return per_sample.mean() if reduce else per_sample
+
+
+# ---------------------------------------------------------------------------
+# Score-map-weighted loss — literally the simple_mpc occupancy reward,
+# registered as a loss so oracle MPC optimization and reporting can share the
+# exact same objective (see docs/oracle_mpc_plan.md §1.3 / open question 3).
+# ---------------------------------------------------------------------------
+
+@register_loss("score_map_weighted")
+class ScoreMapWeightedLoss(LossFn):
+    """
+    Loss = -sum(occupancy_probs * score_map), i.e. the negative of the
+    occupancy reward used elsewhere in simple_mpc
+    (``EulerianAdapter._reward_default`` / ``OccupancyReward``).
+
+    Inputs
+    ------
+    prediction : Tensor[B, H, W] or Tensor[B, 1, H, W] (logits) | ModelOutput
+    batch : dict
+        "score_map": Tensor[H, W] or Tensor[B, H, W] — fixed goal reward
+            landscape (e.g. from ``OccupancyReward.compute_score_tensor``).
+
+    Config keys:
+        per_sample  False — see ``EulerianCombinedLoss``.
+    """
+
+    def __init__(self, cfg: dict):
+        self.per_sample = bool(cfg.get("per_sample", False))
+
+    def __call__(
+        self,
+        prediction: torch.Tensor | ModelOutput,
+        batch: EulerianBatch,
+    ) -> tuple[torch.Tensor, dict]:
+        logits = prediction_to_logits(prediction).float()
+        if logits.ndim == 4 and logits.shape[1] == 1:
+            logits = logits.squeeze(1)
+        probs = torch.sigmoid(logits)
+
+        score_map = batch["score_map"].float()
+        if score_map.ndim == 2:
+            score_map = score_map.unsqueeze(0)
+
+        reward_ps = (probs.clamp(0.0, 1.0) * score_map).reshape(probs.shape[0], -1).sum(dim=-1)
+        loss_ps   = -reward_ps
+
+        total = loss_ps if self.per_sample else loss_ps.mean()
+        return total, {"score_map_reward": reward_ps.mean().item()}
