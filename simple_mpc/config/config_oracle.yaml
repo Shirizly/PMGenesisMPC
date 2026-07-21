@@ -1,7 +1,7 @@
 # simple_mpc/config/config_oracle.yaml
 #
 # Configuration for simple_mpc.oracle_mpc.run_oracle_mpc() — the Genesis-as-
-# model ceiling-baseline MPC. See docs/oracle_mpc_plan.md for the full design.
+# model ceiling-baseline MPC. See docs/oracle_mpc_design.md for the full design.
 #
 # The `dataset` section mirrors config_simple.yaml (same GenesisOracleEnv /
 # EulerianModelWrapper.default_bounds conventions) so oracle runs are
@@ -24,6 +24,13 @@ dataset:
   box_height: 0.04
   box_wall_thickness: 0.02
   headless: True
+  # Automatic transition recording (see Genesis/transition_buffer.py,
+  # docs/oracle_mpc_design.md): every real step AND every candidate rollout
+  # evaluated during planning is saved (tagged is_candidate) to
+  # transitions_dir (relative to Genesis/), in the same on-disk format as
+  # Genesis/data_collection_clean.py's dataset files. On by default.
+  record_transitions: True
+  transitions_dir: 'data/mpc_runs'
   # timing knobs (real / non-rollout steps — see mpc.rollout_settle_steps
   # below for the reduced-fidelity planning-time equivalents)
   settle_steps: 100
@@ -95,7 +102,7 @@ mpc:
   #   type: 'score_map_weighted' — literally -sum(occ * score_map), i.e. the
   #     same objective used for reward reporting below (set mse: 0 so only
   #     this term is active if you want optimization and reporting to share
-  #     the exact same objective; see docs/oracle_mpc_plan.md open question 3).
+  #     the exact same objective; see docs/oracle_mpc_design.md "Cost").
   loss:
     type: 'eulerian_combined'
     mse: 1.0

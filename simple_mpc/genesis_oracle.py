@@ -31,7 +31,7 @@ is fixed at ``build()``, so a separate 1-env "real" sim plus a K-env
     ``rollout_candidates(..., use_rollout_fidelity=False)``), which doubles
     as a state-sync / determinism correctness check.
 
-See docs/oracle_mpc_plan.md §1.1–1.2 for the full design rationale.
+See docs/oracle_mpc_design.md ("Architecture") for the full design rationale.
 """
 
 from __future__ import annotations
@@ -127,10 +127,16 @@ class GenesisOracleEnv:
 
         self._mat_idxc: np.ndarray | None = None
 
-        # Real-step vs. rollout-phase step budgets (docs/oracle_mpc_plan.md
-        # open question #2: halve every phase except the sweep — sweep step
-        # count is already the physical minimum given plate speed/distance,
-        # not an independent "steps" knob).
+        # Own step counter for transition-recording's mpc_step tag — tracked
+        # here (not in SandboxManipulation, which has no "MPC step" concept
+        # of its own) so callers never need to pass it through step() /
+        # rollout_candidates().
+        self._step_counter = 0
+
+        # Real-step vs. rollout-phase step budgets (see docs/oracle_mpc_design.md
+        # "Reduced-fidelity planning rollouts": halve every phase except the
+        # sweep — sweep step count is already the physical minimum given
+        # plate speed/distance, not an independent "steps" knob).
         self._real_settle_steps    = self.settle_steps
         self._real_clearance_steps = self._sim._clearance_ctrl_steps
         mpc_cfg = cfg.get('mpc', {})
@@ -204,18 +210,52 @@ class GenesisOracleEnv:
             if video_recorder is not None and phase in ('post_lower', 'post_sweep'):
                 write_video_frame(self.render(), video_recorder)
 
-        self._sim.execute_action(p_start, p_stop, angle_t, on_phase=_on_phase)
         self._sim._settle_steps         = self._real_settle_steps
         self._sim._clearance_ctrl_steps = self._real_clearance_steps
-        self._sim.update_material_state()
+        # record_all_envs=False: every env just executed the IDENTICAL
+        # broadcast action from the identical state, so only env 0's sample
+        # is a real, non-duplicate transition (see push_and_record's
+        # docstring). flush_after=True: write to disk now rather than
+        # accumulating in memory for the whole episode — this step's flush
+        # picks up its own transition plus every candidate rollout evaluated
+        # during its planning phase (accumulated since the last flush).
+        self._sim.push_and_record(
+            p_start, p_stop, angle_t, on_phase=_on_phase,
+            is_candidate=False, mpc_step=self._step_counter,
+            record_all_envs=False, flush_after=True)
+        self._step_counter += 1
         obs = self.render()
         write_video_frame(obs, video_recorder)
 
         return obs
 
+    def set_recording_context(self, context: dict | None) -> None:
+        """
+        Set the episode-level context (source, episode index, seed, ...)
+        that every subsequent real step() will tag its (incremental,
+        per-step) flush with, until the next reset(). Call once, right after
+        reset(), before running an episode. Reward/success aren't known yet
+        at that point — save those separately (metrics.json/rewards.npy) and
+        join on source + episode_idx later; see docs/oracle_mpc_design.md.
+        """
+        self._sim.set_transition_context(context)
+
+    def save_recorded_transitions(self, context: dict | None = None) -> str | None:
+        """
+        Force an immediate flush of any currently-buffered transitions,
+        tagged with the given context (or whatever set_recording_context()
+        last set, if any). Returns the saved data file's path, or None if
+        nothing was buffered. Not needed in normal use — step() already
+        flushes incrementally after every real push (see
+        set_recording_context) — this exists for callers that want to force
+        a flush at an arbitrary point (e.g. mid-episode).
+        """
+        return self._sim.flush_transitions(context=context)
+
     def reset(self) -> None:
         """Shuffle particles (all envs), then broadcast env 0's post-settle
         state to every env so all K copies start identical."""
+        self._step_counter = 0
         self._sim._settle_steps = self.reset_warmup_steps
         self._sim.shuffle_particles()
         self._sim.update_material_state()
@@ -276,6 +316,7 @@ class GenesisOracleEnv:
         snapshot: dict,
         collect_intermediate: bool = False,
         use_rollout_fidelity: bool = True,
+        record: bool = True,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         """
         Roll out one candidate action sequence per env, in parallel.
@@ -300,6 +341,15 @@ class GenesisOracleEnv:
             "predicted vs actual" comparison isn't confounded by a fidelity
             difference on top of any genuine model gap (there is none here:
             the model *is* the simulator).
+        record : bool
+            If True (default), each horizon step's n_envs candidate pushes
+            are appended to the transition-recording buffer, tagged
+            ``is_candidate=True`` (see docs/oracle_mpc_design.md). Pass
+            False for the winning-sequence re-roll (``use_rollout_fidelity=
+            False``): every env there executes the identical winning action
+            from the identical snapshot, which ``step()`` is about to record
+            for real — recording it here too would just duplicate that
+            transition n_envs times for zero new information.
 
         Returns
         -------
@@ -341,8 +391,13 @@ class GenesisOracleEnv:
             p_start = torch.stack([sx, sy, z_col], dim=1)
             p_stop  = torch.stack([ex, ey, z_col], dim=1)
 
-            self._sim.execute_action(p_start, p_stop, angle)
-            self._sim.update_material_state()
+            if record:
+                self._sim.push_and_record(
+                    p_start, p_stop, angle, is_candidate=True,
+                    mpc_step=self._step_counter, record_all_envs=True)
+            else:
+                self._sim.execute_action(p_start, p_stop, angle)
+                self._sim.update_material_state()
             if collect_intermediate:
                 step_positions.append(self._sim._particle_state[:, :, 0:3].clone())
 

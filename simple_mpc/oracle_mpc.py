@@ -2,7 +2,7 @@
 Oracle sampling-based MPC — uses the Genesis simulator itself as the
 prediction model, via ``GenesisOracleEnv``, and CEM/MPPI (``sampling_optimizers``)
 instead of gradient descent (the simulator is not differentiable through
-``execute_action``). See docs/oracle_mpc_plan.md for the full design.
+``execute_action``). See docs/oracle_mpc_design.md for the full design.
 
 This module mirrors ``simple_mpc.mpc.run_simple_mpc``'s structure and
 **returns the same result-dict schema**, so existing metric extraction /
@@ -279,12 +279,14 @@ def run_oracle_mpc(
         #    here (as an earlier version did) confounded this check with a
         #    genuine physics difference (less settle time = different
         #    resting positions), on top of comparing incompatible occupancy
-        #    representations below. ------------------------------------------
+        #    representations below. record=False: step() below records this
+        #    exact transition for real; recording it here too would just
+        #    duplicate it n_envs times. ----------------------------------------
         with torch.no_grad():
             winner_batch = best_seq.unsqueeze(0).expand(env.n_envs, -1, -1).contiguous()
             _, pred_step_pos = env.rollout_candidates(
                 winner_batch, step_snapshot, collect_intermediate=True,
-                use_rollout_fidelity=False)
+                use_rollout_fidelity=False, record=False)
         pred_occ_seq = [
             env.particles_to_occ(p[0:1], grid_bounds, grid_res, footprint_r)[0].cpu().numpy()
             for p in pred_step_pos

@@ -83,7 +83,6 @@ def run_simple_mpc(
     collect_raw_obs: bool = True,
     collect_states: bool = True,
     collect_states_pred: bool = True,
-    collect_mpc_transitions: bool = False,
 ) -> dict:
     """
     Run simple gradient-descent MPC and return a result dict compatible with
@@ -203,16 +202,6 @@ def run_simple_mpc(
     best_rewards_per_step = []   # list[n_mpc] of float  — best predicted reward per step
     total_time = rollout_time = optim_time = 0.0
     iter_num   = 0
-
-    # ── mpc transition collection ─────────────────────────────────────────────
-    _collect_trans = (collect_mpc_transitions
-                      and hasattr(env, '_sim')
-                      and hasattr(env._sim, '_particle_state'))
-    _trans_states:   list = []
-    _trans_states_:  list = []
-    _trans_p_starts: list = []
-    _trans_p_stops:  list = []
-    _trans_angles:   list = []
 
     # ── t = 0: render and seed initial state ──────────────────────────────────
     obs_cur    = env.render()
@@ -390,8 +379,10 @@ def run_simple_mpc(
               f"angle={math.degrees(_angle):.1f}°")
 
         # -- execute best action in simulator ---------------------------------
-        if _collect_trans:
-            _trans_states.append(env._sim._particle_state[0].detach().cpu().clone())
+        # (before/after particle state + action is recorded automatically by
+        # env.step() itself, if the env supports it — see
+        # env.genesis_env.GenesisEnv.save_recorded_transitions and
+        # docs/ARCHITECTURE.md; no bookkeeping needed here.)
         obs_next = env.step(best_action_np, video_recorder=video_recorder)
         if obs_next is None:
             print("WARNING: simulation exploded — terminating MPC early")
@@ -413,12 +404,6 @@ def run_simple_mpc(
         actions[i]         = best_action_5d
         rewards[i + 1]     = r_next
         occ_rewards[i + 1] = _compute_occ_reward(adapter, state_cur, obs_next)
-        if _collect_trans:
-            _z = float(env._sim._operation_height)
-            _trans_states_.append(env._sim._particle_state[0].detach().cpu().clone())
-            _trans_p_starts.append(torch.tensor([_sx, _sy, _z], dtype=torch.float32))
-            _trans_p_stops.append(torch.tensor([_ex, _ey, _z], dtype=torch.float32))
-            _trans_angles.append(float(_angle))
 
         # -- debug: winner panel (Eulerian only) ------------------------------
         if debug_enabled and adapter.debug_vis_enabled:
@@ -458,11 +443,10 @@ def run_simple_mpc(
         'iter_num':         iter_num,
         'best_rewards_per_step': best_rewards_per_step,   # list[n_mpc] of float
         'particle_den_seq':      [],   # unused; present for API compatibility
-        'mpc_transitions': {
-            'states':   torch.stack(_trans_states),
-            'states_':  torch.stack(_trans_states_),
-            'p_starts': torch.stack(_trans_p_starts),
-            'p_stops':  torch.stack(_trans_p_stops),
-            'angles':   torch.tensor(_trans_angles, dtype=torch.float32),
-        } if (_collect_trans and _trans_states_) else None,
+        # Transitions are now recorded automatically by the env itself (see
+        # env.genesis_env.GenesisEnv.save_recorded_transitions,
+        # docs/ARCHITECTURE.md) rather than threaded back through this
+        # result dict — this key is kept only for schema stability with
+        # existing consumers that check for its presence.
+        'mpc_transitions': None,
     }

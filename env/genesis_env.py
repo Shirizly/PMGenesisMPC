@@ -99,6 +99,11 @@ class GenesisEnv:
         # Lazily built after first render (once seg_idxc_map is populated)
         self._mat_idxc: np.ndarray | None = None
 
+        # Own step counter for transition-recording's mpc_step tag — tracked
+        # here (not in SandboxManipulation, which has no "MPC step" concept
+        # of its own) so callers never need to pass it through step().
+        self._step_counter = 0
+
     # ------------------------------------------------------------------ #
     #  Genesis config builder                                              #
     # ------------------------------------------------------------------ #
@@ -168,7 +173,14 @@ class GenesisEnv:
                 'size':  plate.get('size',
                                    ds.get('plate_size', [0.04, 0.002, 0.01])),
             },
-            'data_collection': {'sampled': {}},
+            'data_collection': {
+                'sampled': {},
+                # Automatic transition recording (see
+                # Genesis/transition_buffer.py, docs/ARCHITECTURE.md) — on by
+                # default; set dataset.record_transitions: false to disable.
+                'record_transitions': bool(ds.get('record_transitions', True)),
+                'transitions_dir':    ds.get('transitions_dir', 'data/mpc_runs'),
+            },
         }
 
     # ------------------------------------------------------------------ #
@@ -279,16 +291,42 @@ class GenesisEnv:
             if video_recorder is not None and phase in ('post_lower', 'post_sweep'):
                 write_video_frame(self.render(), video_recorder)
 
-        self._sim.execute_action(p_start, p_stop, angle_t, on_phase=_on_phase)
         self._sim._settle_steps = self.settle_steps   # honour per-experiment override
-        self._sim.update_material_state()
+        self._sim.push_and_record(
+            p_start, p_stop, angle_t, on_phase=_on_phase,
+            is_candidate=False, mpc_step=self._step_counter, flush_after=True)
+        self._step_counter += 1
         obs = self.render()
         write_video_frame(obs, video_recorder)
 
         return obs
 
+    def set_recording_context(self, context: dict | None) -> None:
+        """
+        Set the episode-level context (source, episode index, seed, ...)
+        that every subsequent real step() will tag its (incremental,
+        per-step) flush with, until the next reset(). Call once, right after
+        reset(), before running an episode. Reward/success aren't known yet
+        at that point — save those separately (metrics.json/rewards.npy) and
+        join on source + episode_idx later; see docs/ARCHITECTURE.md.
+        """
+        self._sim.set_transition_context(context)
+
+    def save_recorded_transitions(self, context: dict | None = None) -> str | None:
+        """
+        Force an immediate flush of any currently-buffered transitions,
+        tagged with the given context (or whatever set_recording_context()
+        last set, if any). Returns the saved data file's path, or None if
+        nothing was buffered. Not needed in normal use — step() already
+        flushes incrementally after every real push (see
+        set_recording_context) — this exists for callers that want to force
+        a flush at an arbitrary point.
+        """
+        return self._sim.flush_transitions(context=context)
+
     def reset(self) -> None:
         """Shuffle particles to a new random configuration."""
+        self._step_counter = 0
         # Use reset_warmup_steps for the post-shuffle settle (particles need
         # time to fall under gravity from their newly placed positions).
         self._sim._settle_steps = self.reset_warmup_steps

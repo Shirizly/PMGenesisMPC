@@ -51,10 +51,17 @@ Extended optional keys (migration-safe):
 {
     "current_occupancy": Tensor[B, H, W],
     "target_occupancy":  Tensor[B, H, W],
+    "score_map":         Tensor[H, W] | Tensor[B, H, W],  # ScoreMapWeightedLoss only
 }
 ```
 
 When present, Eulerian losses should prefer explicit occupancy keys over implicit channel slicing.
+
+`score_map` is a fixed goal-reward landscape (e.g. from
+`simple_mpc.occupancy_reward.OccupancyReward.compute_score_tensor`), consumed
+only by `ScoreMapWeightedLoss` (`training/losses.py`) — it lets MPC
+optimization use literally the same objective as reward reporting. Other
+losses ignore it.
 
 ## 2. Model Output Contract
 
@@ -117,6 +124,23 @@ compute_reward(state_batch) -> reward_batch
 Adapter state is representation-specific:
 - Eulerian state: occupancy grid tensor `(B, Nx, Ny)`
 - Lagrangian state: particle tensor `(B, N, 3)`
+
+`simple_mpc.oracle_mpc` (the Genesis-as-model sampling MPC — see
+`docs/oracle_mpc_design.md`) does not implement this adapter surface at all:
+its "model" is the Genesis simulator, so `predict_step` is a real physics
+rollout (`GenesisOracleEnv.rollout_candidates`), not a learned forward pass,
+and there is no `compute_reward`/`ModelAdapter` object to swap. It reuses the
+same occupancy conventions (§4.1) and the training loss registry (via
+`per_sample=True`, see below) rather than duplicating the adapter contract.
+
+### 3.5 Loss contract's `per_sample` mode (MPC cost use)
+
+Losses in `training/losses.py` accept an optional `per_sample: true` config
+key (see its module docstring). With it set, `total_loss` is an unreduced
+`Tensor[B]` (one cost per batch item) instead of a scalar — this is how
+`simple_mpc.oracle_mpc` ranks candidates using the exact same registered
+losses training uses, rather than a parallel cost-specific implementation.
+Training code should never set this; it's for candidate-ranking callers only.
 
 ## 4. Eulerian Representation Details
 

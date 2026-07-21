@@ -14,7 +14,7 @@ is not usable there. CEM and MPPI both replace it with the same skeleton:
 
 They differ only in the ``tell`` update rule (~15 lines each), which is why
 both are implemented here rather than picking one (see
-docs/oracle_mpc_plan.md §1.4).
+docs/oracle_mpc_design.md "Sampling optimizers").
 """
 
 from __future__ import annotations

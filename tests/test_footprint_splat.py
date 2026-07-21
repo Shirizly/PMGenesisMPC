@@ -1,7 +1,8 @@
 """
 Fast, data-free unit tests for the footprint-radius particle splatting added
 to transforms.functional for simple_mpc.genesis_oracle
-(docs/oracle_mpc_plan.md §1.3 occupancy-density caveat).
+(see docs/oracle_mpc_design.md "Occupancy representation" for the
+dense-vs-footprint-splat rationale and the shape_factor fix).
 """
 
 import torch

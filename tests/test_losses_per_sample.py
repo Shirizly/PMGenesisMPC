@@ -1,7 +1,7 @@
 """
 Fast, data-free unit tests for the per-sample loss reduction mode added for
-simple_mpc.oracle_mpc (docs/oracle_mpc_plan.md §1.3), and for the new
-score_map_weighted loss.
+simple_mpc.oracle_mpc (see docs/oracle_mpc_design.md "Cost" and
+docs/INTERFACES.md §3.5), and for the new score_map_weighted loss.
 """
 
 import torch

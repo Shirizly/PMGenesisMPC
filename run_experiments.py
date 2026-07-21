@@ -37,7 +37,6 @@ import shutil
 import argparse
 import subprocess
 from pathlib import Path
-import yaml
 
 import numpy as np
 import torch
@@ -870,6 +869,19 @@ def run_episode(
     if fixed_initial_pos is not None:
         env.set_positions(fixed_initial_pos)
 
+    # Tag every real step's incremental transition flush (see
+    # env.genesis_env.GenesisEnv.step()/set_recording_context) with this
+    # episode's identity, set BEFORE the episode runs — reward/success
+    # aren't known yet, so they aren't included here; they're saved
+    # separately below (metrics.json) and joinable by source + episode_idx.
+    if output_cfg.get('save_mpc_transitions', True) and hasattr(env, 'set_recording_context'):
+        env.set_recording_context({
+            'source':      'simple_mpc.mpc',
+            'episode_idx': ep_idx,
+            'seed':        seed,
+            'model_type':  type(model).__name__,
+        })
+
     subgoal, goal_img = build_goal(cfg, env)
 
     # Scale goal so its pixel footprint matches the current material extent
@@ -881,7 +893,6 @@ def run_episode(
     need_raw_obs = bool(output_cfg.get('save_raw_obs', False)) or need_video
     need_states = bool(output_cfg.get('save_states', False)) or need_video
     need_states_pred = need_video
-    need_trans = bool(output_cfg.get('save_mpc_transitions', False))
 
     result  = run_simple_mpc(
         env,
@@ -891,7 +902,6 @@ def run_episode(
         collect_raw_obs=need_raw_obs,
         collect_states=need_states,
         collect_states_pred=need_states_pred,
-        collect_mpc_transitions=need_trans,
     )
     metrics = compute_episode_metrics(
         result, success_threshold=output_cfg.get('success_threshold', 0.0))
@@ -946,16 +956,13 @@ def run_episode(
             _save_prediction_video(
                 result, ep_dir, cam_params, goal_img, fps=fps)
 
-    if need_trans and result.get('mpc_transitions') is not None:
-        _exp_dir  = os.path.dirname(ep_dir)
-        trans_dir = os.path.join('mpc_transitions',
-                                 os.path.basename(ep_dir))
-        os.makedirs(trans_dir, exist_ok=True)
-        torch.save(result['mpc_transitions'],
-                   os.path.join(trans_dir, f'_{ep_idx}_data.pt'))
-        with open(os.path.join(trans_dir, f'_{ep_idx}_config.yaml'), 'w') as _fh:
-            yaml.dump(env._sim._config, _fh, default_flow_style=False)
-        print(f'    Saved MPC transitions → {trans_dir}/_{ep_idx}_data.pt')
+    # Real-step transitions (before/after particle state + action) were
+    # already flushed to disk incrementally during the episode — see
+    # set_recording_context() above and
+    # env.genesis_env.GenesisEnv.step()/push_and_record
+    # (docs/ARCHITECTURE.md). Nothing left to do here; this episode's
+    # outcome (metrics, above) is joinable with its transitions by
+    # source + episode_idx.
 
     return metrics
 

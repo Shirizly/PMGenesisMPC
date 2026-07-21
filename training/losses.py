@@ -265,7 +265,7 @@ def _soft_dice_loss(
 # ---------------------------------------------------------------------------
 # Score-map-weighted loss — literally the simple_mpc occupancy reward,
 # registered as a loss so oracle MPC optimization and reporting can share the
-# exact same objective (see docs/oracle_mpc_plan.md §1.3 / open question 3).
+# exact same objective (see docs/oracle_mpc_design.md "Cost").
 # ---------------------------------------------------------------------------
 
 @register_loss("score_map_weighted")

@@ -2,7 +2,7 @@
 """
 Genesis/benchmark_n_envs.py — measure Genesis multi-env rollout throughput to
 pick a default ``mpc.n_envs`` for ``simple_mpc.oracle_mpc``
-(docs/oracle_mpc_plan.md open question 1).
+(see docs/oracle_mpc_design.md's config reference for ``n_envs``).
 
 For each ``n_envs`` in a doubling sweep (default 4, 8, 16, 32, 64), builds a
 fresh ``SandboxManipulation(n_envs=n_envs)``, times several batches of "one

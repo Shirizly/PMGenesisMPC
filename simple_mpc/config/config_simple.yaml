@@ -39,6 +39,12 @@ dataset:
   fast_mode: False                # no-op in Genesis (kept for legacy compat)
   action_step_size: 0.02          # no-op in Genesis (sweep uses velocity control)
   render_step_before_capture: True  # no-op in Genesis (kept for legacy compat)
+  # Automatic transition recording (see Genesis/transition_buffer.py,
+  # docs/ARCHITECTURE.md): every real push executed via env.step() is
+  # saved, in the same on-disk format as Genesis/data_collection_clean.py's
+  # dataset files, to transitions_dir (relative to Genesis/). On by default.
+  record_transitions: True
+  transitions_dir: 'data/mpc_runs'
   # ── timing knobs (all three now wired to the Genesis sim) ─────────────────
   # settle_steps   : physics steps held after each push action (post-action settle).
   #                  Was hardcoded at 100 before; 100 maintains identical behaviour.

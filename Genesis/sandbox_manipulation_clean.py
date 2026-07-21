@@ -1,8 +1,9 @@
 import genesis as gs
-import genesis.utils.geom as gu 
+import genesis.utils.geom as gu
 import numpy as np
 import yaml
 from .utilities.materials import *
+from .transition_buffer import TransitionBuffer
 from pathlib import Path
 import os
 import math
@@ -42,8 +43,27 @@ class SandboxManipulation:
         self._config.setdefault("data_collection", {})
         self._config["data_collection"].setdefault("sampled", {})
         self._sampled_params = self._config["data_collection"]["sampled"]
-        
+
         self._rigid_options = self._config.get("rigid_options", {})
+
+        # Automatic transition recording — every push executed via
+        # push_and_record() (real MPC steps and, tagged separately, candidate
+        # rollouts) is appended here and flushed to a persistent, ever-growing
+        # dataset directory. On by default; see docs/ARCHITECTURE.md /
+        # docs/oracle_mpc_design.md for the on-disk schema and rationale.
+        dc_cfg = self._config["data_collection"]
+        self._record_transitions = bool(dc_cfg.get("record_transitions", True))
+        self._transitions_dir = Path(__file__).parent / dc_cfg.get(
+            "transitions_dir", "data/mpc_runs")
+        self._transition_buffer = TransitionBuffer() if self._record_transitions else None
+        # Context (source/episode_idx/seed/...) to tag flushes with — set
+        # once per episode via set_transition_context(), used by every
+        # push_and_record(flush_after=True) call until the next reset. This
+        # is what lets real-step flushes happen incrementally (see
+        # push_and_record) while still carrying episode-identifying info,
+        # without needing to know the episode's outcome (only known at the
+        # end) to flush during it.
+        self._transition_context: dict | None = None
         
         # Init simulation
         gs.init(
@@ -485,6 +505,19 @@ class SandboxManipulation:
         self._n_active = n
 
     def shuffle_particles(self):
+        # Safety net: flush any transitions recorded since the last shuffle
+        # (i.e. the episode that's about to be overwritten) before wiping
+        # particle state for a new configuration, so buffered data is never
+        # silently lost even if a real step's flush_after=True was somehow
+        # skipped. No-op if recording is disabled or nothing is buffered
+        # (e.g. Genesis/data_collection_clean.py's own flow never calls
+        # push_and_record, so this stays a harmless no-op there). Then clear
+        # the transition context — a new episode is starting, and the caller
+        # (env.reset()) is expected to set a fresh one via
+        # set_transition_context() right after this returns.
+        self.flush_transitions()
+        self.set_transition_context(None)
+
         n_particles = len(self.material)
         if n_particles == 0:
             return
@@ -914,6 +947,121 @@ class SandboxManipulation:
 
         return reached_goal, final_pos
 
+    def set_transition_context(self, context: dict | None) -> None:
+        """
+        Set the episode-level context (e.g. source MPC variant, episode
+        index, seed) that subsequent ``push_and_record(flush_after=True)``
+        calls will tag their flush with, until this is called again.
+
+        Call once per episode, right after resetting — this is what lets
+        real-step flushes carry episode-identifying context *incrementally*,
+        during the episode, rather than needing to wait until the episode's
+        outcome (reward/success) is known to flush anything. Per-episode
+        outcome, once known, is saved separately by the driver script's own
+        metrics.json/rewards.npy (joinable by source + episode_idx) — see
+        docs/oracle_mpc_design.md.
+        """
+        self._transition_context = context
+
+    def push_and_record(
+            self,
+            p_start,
+            p_stop,
+            angle,
+            on_phase=None,
+            is_candidate=False,
+            mpc_step=None,
+            record_all_envs=True,
+            flush_after=False,
+        ):
+        """
+        Execute a push, settle (update_material_state), and — unless
+        recording is disabled — append the resulting before/after/action
+        transition(s) to the internal buffer for later export via
+        flush_transitions().
+
+        Replaces the execute_action(...) + update_material_state() pair used
+        at every "real" or "candidate rollout" call site
+        (env.genesis_env.GenesisEnv.step,
+        simple_mpc.genesis_oracle.GenesisOracleEnv.step / rollout_candidates).
+        Callers should set self._settle_steps / self._clearance_ctrl_steps to
+        the desired values before calling this, exactly as they already do
+        before the pair it replaces — neither is read by execute_action
+        itself, so setting them any time before update_material_state() runs
+        is equivalent.
+
+        Args:
+            p_start, p_stop, angle: same as execute_action.
+            on_phase: same as execute_action (video-frame hook; unrelated to
+                recording).
+            is_candidate: False for a real executed step (part of the
+                sequential trajectory); True for an optimizer-exploration
+                rollout evaluated during planning. See
+                docs/oracle_mpc_design.md for why this distinction matters
+                for training use.
+            mpc_step: which real MPC step's planning phase produced this
+                push (the caller's own step counter — SandboxManipulation
+                has no notion of "MPC step" itself). Recorded as-is.
+            record_all_envs: True (default) records one sample per env — use
+                this when every env ran a genuinely distinct action (e.g.
+                candidate rollouts). Pass False when all n_envs execute the
+                identical broadcast action from an identical state (e.g.
+                GenesisOracleEnv.step()'s real step) — recording all n_envs
+                there would just duplicate the same transition n_envs times;
+                only env 0's sample is appended instead.
+            flush_after: if True, immediately flush the buffer (tagged with
+                whatever context was last set via set_transition_context())
+                after appending. Pass True for real steps so data reaches
+                disk incrementally, step by step, rather than accumulating
+                in memory for an entire episode — episodes can take a long
+                time, and losing hours of buffered candidate-rollout data to
+                a crash (or just not seeing any output while a run is in
+                progress) is the failure mode this avoids. Leave False for
+                candidate rollouts (the common case: many rollouts accumulate
+                between one real step's flush and the next).
+
+        Returns:
+            (reached_goal, final_pos) — identical to execute_action.
+        """
+        before = self._particle_state.clone() if self._record_transitions else None
+        reached_goal, final_pos = self.execute_action(p_start, p_stop, angle, on_phase=on_phase)
+        self.update_material_state()
+        if self._record_transitions:
+            if record_all_envs:
+                self._transition_buffer.append_batch(
+                    before, self._particle_state, p_start, p_stop, angle,
+                    reached_goal, is_candidate=is_candidate, mpc_step=mpc_step,
+                )
+            else:
+                self._transition_buffer.append(
+                    before[0], self._particle_state[0], p_start[0], p_stop[0],
+                    float(angle[0]), bool(reached_goal[0]),
+                    is_candidate=is_candidate, mpc_step=mpc_step,
+                )
+            if flush_after:
+                self.flush_transitions(context=self._transition_context)
+        return reached_goal, final_pos
+
+    def flush_transitions(self, context: dict | None = None) -> str | None:
+        """
+        Write any buffered transitions (see push_and_record) to
+        self._transitions_dir and clear the buffer.
+
+        Returns the saved data file's path, or None if recording is
+        disabled or nothing is buffered. ``context=None`` falls back to
+        whatever was last set via ``set_transition_context()`` (so the
+        context-less safety-net calls from shuffle_particles()/destroy()
+        still tag flushes when a context is active). Most callers don't need
+        to pass ``context`` explicitly at all: push_and_record's
+        ``flush_after=True`` (used for real steps) already does, using the
+        stored context automatically.
+        """
+        if not self._record_transitions or self._transition_buffer.is_empty():
+            return None
+        return self._transition_buffer.save(
+            self._transitions_dir, self._config,
+            context=context if context is not None else self._transition_context)
+
     def collect_data_samples(
             self,
             n_samples: int = 200,
@@ -1006,6 +1154,7 @@ class SandboxManipulation:
         self._log(f"Material batch finished. Run {n_runs} saved to {full_path}.")
 
     def destroy(self):
+        self.flush_transitions()   # final safety-net flush — see shuffle_particles()
         gs.destroy()
 
     def view(self, horizon=1000):

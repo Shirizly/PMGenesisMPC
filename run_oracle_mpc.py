@@ -5,7 +5,7 @@ run_oracle_mpc.py — Genesis-as-model ceiling-baseline MPC entry point.
 Builds one batched GenesisOracleEnv (shared across episodes — Genesis only
 allows gs.init() once per process) and runs CEM/MPPI sampling MPC where the
 Genesis simulator itself is the prediction model (see
-docs/oracle_mpc_plan.md), for ``episodes.n_episodes`` independent episodes.
+docs/oracle_mpc_design.md), for ``episodes.n_episodes`` independent episodes.
 
 Each episode gets its own output subdirectory with enough saved data to
 recreate its trajectory visually offline (raw RGB+depth frames, an .avi
@@ -15,7 +15,7 @@ stats, predicted-vs-actual occupancy). A run-level summary aggregates reward
 curves across all episodes.
 
 This is a standalone script (not yet wired into run_experiments.py's batch
-runner — see docs/oracle_mpc_plan.md open question 5).
+runner — see docs/oracle_mpc_design.md's Known Limitations).
 
 Usage
 -----
@@ -139,6 +139,20 @@ def run_one_episode(env, cfg: dict, ep_idx: int, seed: int, ep_dir: str,
     to recreate this episode's trajectory later, return (rewards, metrics)."""
     set_seed(seed)
     env.reset()
+    # Tag every real step's incremental flush (see genesis_oracle.py's
+    # step()/set_recording_context) with this episode's identity, set BEFORE
+    # the episode runs — reward/success aren't known yet at this point, so
+    # they aren't included here; they're saved separately below
+    # (metrics.json) and joinable by source + episode_idx later.
+    # save_mpc_transitions (default True) only controls this context
+    # tagging — recording itself (dataset.record_transitions) is unaffected.
+    if cfg['mpc'].get('save_mpc_transitions', True):
+        env.set_recording_context({
+            'source':      'simple_mpc.oracle_mpc',
+            'episode_idx': ep_idx,
+            'seed':        seed,
+            'optimizer':   cfg['mpc'].get('optimizer'),
+        })
 
     subgoal  = build_goal(cfg, env)
     obs_init = env.render()
@@ -213,6 +227,13 @@ def run_one_episode(env, cfg: dict, ep_idx: int, seed: int, ep_dir: str,
     }
     with open(os.path.join(ep_dir, 'metrics.json'), 'w') as f:
         json.dump(metrics, f, indent=2)
+
+    # Real-step (and, tagged separately, candidate-rollout) transitions were
+    # already flushed to disk incrementally during the episode — see
+    # set_recording_context() above and
+    # simple_mpc.genesis_oracle.GenesisOracleEnv.step()/push_and_record
+    # (docs/oracle_mpc_design.md). Nothing left to do here; this episode's
+    # outcome (below) is joinable with its transitions by source + episode_idx.
 
     print(f"  [episode {ep_idx}] reward {result['rewards'][0]:.4f} -> "
           f"{result['rewards'][-1]:.4f}  ({elapsed:.1f}s)  saved to {ep_dir}")
