@@ -1,6 +1,6 @@
 # Architecture
 
-This is the repository map and extension guide. Data contracts and coordinate conventions are documented in `INTERFACES.md`. Utility ownership and transform guidance are documented in `UTILITIES.md`. The Genesis-as-model sampling MPC (CEM/MPPI ceiling baseline) has its own reference doc, `oracle_mpc_design.md`, since its design has enough moving parts (batched multi-env rollout, snapshot/restore state management, sampling optimizers) to warrant a dedicated write-up; this file only maps where its pieces live.
+This is the repository map and extension guide. Data contracts and coordinate conventions are documented in `INTERFACES.md`. Utility ownership and transform guidance are documented in `UTILITIES.md`. The Genesis-as-model sampling MPC (CEM/MPPI ceiling baseline) has its own reference doc, `oracle_mpc_design.md`, since its design has enough moving parts (batched multi-env rollout, snapshot/restore state management, sampling optimizers) to warrant a dedicated write-up; this file only maps where its pieces live. The human-piloted variant of that same ceiling baseline (a person picks the action each step instead of CEM/MPPI, refined by a local grid search) has its own doc, `human_demo_design.md`, for the same reason.
 
 > **Documentation is part of the change, not a follow-up.** Any change to a
 > major information flow, a module's responsibility, a default value, or an
@@ -101,7 +101,9 @@ transforms/
                         splat, shape_factor for non-spherical particles),
                         footprint_radius_voxels, draw_plate_soft,
                         genesis_action_to_cam3d, genesis_particles_to_cam3d,
-                        build_action_delta
+                        build_action_delta, action_to_pose (shared 4D-derived-
+                        yaw / 5D-explicit-yaw action convention — see
+                        docs/human_demo_design.md)
   representation.py     Compose, EnsureRepresentation, occupancy/particle
                         alias transforms, build_transforms
 
@@ -142,7 +144,15 @@ simple_mpc/
                         model; no adapter needed (see docs/oracle_mpc_design.md)
   sampling_optimizers.py CEMOptimizer, MPPIOptimizer, make_sampling_optimizer
                         (shared ask/tell/best skeleton; gradient-free)
-  config/               base MPC config, config_oracle*.yaml, experiments/
+  human_grid_search.py  build_action_grid, grid_search_refine — local 5D grid
+                        search around a human-drawn action, via the oracle
+                        simulator (see docs/human_demo_design.md)
+  human_mpc.py          HumanDemoSession (propose/commit/finished/finalize),
+                        save_episode — interactive human-piloted episodes
+                        over GenesisOracleEnv, parallel to (not built on)
+                        run_oracle_mpc's automated loop
+  config/               base MPC config, config_oracle*.yaml,
+                        config_human_demo.yaml, experiments/
 
 RealData/
   dataset.py            RealPileSweepData (real camera data; mirrors the
@@ -211,6 +221,10 @@ tests/
                                   (Genesis-free, synthetic cost function)
   test_transition_buffer.py      TransitionBuffer append/save schema
                                   round-trip (Genesis-free)
+  test_action_to_pose.py         transforms.functional.action_to_pose 4D vs
+                                  5D branch, batching (Genesis-free)
+  test_human_grid_search.py      build_action_grid shape/centering/bounds/
+                                  broadcast (Genesis-free)
 
 utils.py                shared root-level helpers (YAML I/O, action geometry,
                         point-cloud ops, goal-shape generation,
@@ -235,12 +249,25 @@ run_oracle_mpc.py        Oracle (Genesis-as-model) MPC entry point — builds
                          episodes, saves full per-episode trajectories
                          (raw frames, point clouds, predicted-vs-actual
                          occupancy, video) — see docs/oracle_mpc_design.md
+human_mpc_gui.py         Human-demonstration GUI over the same
+                         GenesisOracleEnv — drag-and-drop action input,
+                         local grid-search refinement, full multi-step
+                         episodes saved in run_oracle_mpc.py's schema — see
+                         docs/human_demo_design.md
+debug_mpc_gui.py         Interactive learned/heuristic-model MPC debugger
+                         (single-env GenesisEnv, gradient-descent action
+                         refinement) — human_mpc_gui.py reuses its
+                         tile-image helpers and canvas-drag interaction
 visualize.py             dataset / occupancy / prediction visualization
 ```
 
 Genesis-dependent modules (`env/genesis_env.py`, `simple_mpc/genesis_oracle.py`,
 `Genesis/*`) are only importable where the `genesis` package is installed;
-everything else in this map is Genesis-free.
+everything else in this map is Genesis-free. `simple_mpc/human_grid_search.py`
+is a partial exception: `build_action_grid` is plain NumPy and Genesis-free,
+but `grid_search_refine` needs a real `GenesisOracleEnv` — the `genesis`-
+requiring import is deferred inside that one function so the module itself
+stays importable without `genesis` installed (see docs/human_demo_design.md).
 
 ## Data Flow
 

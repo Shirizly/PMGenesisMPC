@@ -1,0 +1,4 @@
+episode_idx: 0
+optimizer: human_grid_search
+seed: 0
+source: smoke_test

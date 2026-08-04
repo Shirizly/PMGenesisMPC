@@ -1,0 +1,89 @@
+# simple_mpc/config/config_human_demo.yaml
+#
+# Configuration for human_mpc_gui.py / simple_mpc.human_mpc.HumanDemoSession
+# — human-piloted episodes on the Genesis-oracle ceiling baseline, used to
+# measure the achievable-reward ceiling independent of any sampling
+# optimizer. See docs/human_demo_design.md for the full design.
+#
+# `dataset` mirrors config_oracle.yaml (same GenesisOracleEnv conventions) so
+# human-demo episodes are directly comparable to automated oracle_mpc runs
+# and learned-model simple_mpc runs on the same task.
+
+dataset:
+  init_pos: 'rand_spread'
+  global_scale: 0.6          # = 2 * cam_height (metres); cam at 0.3 m above box
+  obj: "chickpeas"
+  num_objects: 20
+  cam_height: 0.3
+  cam_fov: 45.0
+  wkspc_w: 0.064              # half-width of Genesis box (metres; full box = 0.128 m)
+  render_width: 720
+  render_height: 720
+  n_particles: 20
+  material_shape: 'cube'
+  particle_size: 0.005        # metres
+  plate_speed: 0.125
+  box_height: 0.04
+  box_wall_thickness: 0.02
+  headless: True
+  record_transitions: True
+  transitions_dir: 'data/mpc_runs'
+  settle_steps: 100
+  reset_warmup_steps: 10
+  pos_ctrl_steps: 60
+  plate_length: 0.04
+  plate_width:  0.002
+  plate_safety_margin: 0.01
+  particle_friction: 0.25
+  particle_density: 750.0
+  box_friction: 0.3
+
+mpc:
+  # n_envs here is the grid-search candidate batch size (see `human.grid_n`
+  # below), NOT an optimizer population — a human-piloted session is
+  # interactive, so this is sized small for responsiveness rather than large
+  # for exploration coverage like config_oracle.yaml's n_envs=32+.
+  n_envs: 16
+
+  # Soft cap on episode length (HumanDemoSession.finished()) — a human
+  # front end may stop earlier or keep going past this; it exists so a
+  # default-length episode is directly comparable to an automated run's
+  # n_mpc. Not enforced by GenesisOracleEnv itself.
+  n_mpc: 20
+
+  # rollout_settle_steps: settle-phase step count during grid-search
+  # rollouts only (the real executed step always uses dataset.settle_steps
+  # in full) — same convention/rationale as config_oracle.yaml.
+  rollout_settle_steps: 50
+
+  grid_res: [64, 64]
+
+  loss:
+    type: 'eulerian_combined'
+    mse: 1.0
+    dice: 0.0
+    bce: 0.0
+
+  reward:
+    empty_penalty: 0.2
+
+  task:
+    type: 'target_shape'
+    target_char: 'T'
+
+  output_dir: 'outputs/human_demo'
+  video_fps: 2
+
+# Grid-search refinement around the human-drawn action — see
+# simple_mpc.human_grid_search.build_action_grid for the exact semantics.
+human:
+  grid_n: 3                  # grid points per dimension -> grid_n**5 candidates
+  # Normalized half-width of the search window per dimension, as a fraction
+  # of that dimension's own [clip_lo, clip_hi] range (workspace extent for
+  # sx/sy/ex/ey, [0, pi) for the plate-yaw 5th dimension). A single scalar
+  # broadcasts to all 5 dims; use a length-5 list to vary it, e.g.:
+  #   grid_delta: [0.1, 0.1, 0.1, 0.1, 0.25]
+  grid_delta: 0.15
+
+episodes:
+  random_seed_base: 0

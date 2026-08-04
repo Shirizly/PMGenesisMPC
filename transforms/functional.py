@@ -176,6 +176,38 @@ def genesis_action_to_cam3d(
     return s_3d_cam, e_3d_cam
 
 
+def action_to_pose(act: torch.Tensor):
+    """(..., 4) or (..., 5) push action -> (sx, sy, ex, ey, angle_rad), each (...,).
+
+    4-component actions (``[sx, sy, ex, ey]``) derive the plate yaw
+    perpendicular to the push direction — the convention every automated
+    sampler/optimizer in this codebase uses (``simple_mpc.action_sampler``,
+    ``simple_mpc.sampling_optimizers``, ``env.genesis_env.GenesisEnv``).
+    5-component actions carry an explicit 5th component, the plate yaw as a
+    normalized ``[0, 1)`` fraction of its pi-periodic orientation range (the
+    plate is symmetric under a 180-degree rotation, matching
+    ``simple_mpc.action_sampler.PlateCollisionChecker``'s
+    ``k * pi / n_angles`` convention), denormalized to radians here. This is
+    used by ``simple_mpc.genesis_oracle.GenesisOracleEnv`` (real steps and
+    planning rollouts alike) and the human-demo grid search / GUI
+    (``simple_mpc.human_mpc``, ``simple_mpc.human_grid_search``,
+    ``human_mpc_gui.py``) to decouple tool orientation from travel
+    direction — something ``SandboxManipulation.execute_action``'s own
+    ``angle`` parameter already supports natively; every other caller in
+    this codebase just happens to always derive it from direction instead
+    of setting it independently.
+    """
+    sx, sy, ex, ey = act[..., 0], act[..., 1], act[..., 2], act[..., 3]
+    if act.shape[-1] >= 5:
+        angle = act[..., 4] * math.pi
+    else:
+        dxy = torch.hypot(ex - sx, ey - sy)
+        angle = torch.where(dxy > 1e-6,
+                             torch.atan2(ey - sy, ex - sx) + math.pi / 2,
+                             torch.zeros_like(dxy))
+    return sx, sy, ex, ey, angle
+
+
 def genesis_particles_to_cam3d(
     pos_world: torch.Tensor,   # (..., 3) world-frame [x, y, z] metres
     scale: float,

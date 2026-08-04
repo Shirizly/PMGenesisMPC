@@ -11,11 +11,13 @@ user-invocable: true
 
 Research codebase for granular pile manipulation: pushing granular material
 (cubes/spheres of e.g. chickpeas) toward a target shape/region with a
-plate-style pusher, in the Genesis simulator. It supports both **learned
-dynamics models driven by gradient-descent MPC** and a **Genesis-as-model
-sampling MPC (CEM/MPPI) ceiling baseline** that removes dynamics-model error
-entirely, plus the shared training/loss/transform infrastructure both depend
-on.
+plate-style pusher, in the Genesis simulator. It supports **learned dynamics
+models driven by gradient-descent MPC**, a **Genesis-as-model sampling MPC
+(CEM/MPPI) ceiling baseline** that removes dynamics-model error entirely,
+and a **human-piloted variant of that same ceiling baseline** (grid-search-
+refined manual actions via a GUI) that also removes optimizer/sampling
+limitations from the comparison, plus the shared training/loss/transform
+infrastructure all three depend on.
 
 ## Major parts
 
@@ -28,8 +30,8 @@ on.
 | `transforms/` | Stateless, dependency-light representation conversions (particle↔occupancy, action↔camera coords) shared by datasets, models, and both MPC variants |
 | `registry/` | `register_model`/`build_model`, `register_dataset`/`build_dataset` factories |
 | `physics/` | `PhysicsBounds` — the one normalization source of truth |
-| `simple_mpc/` | Both MPC variants: `mpc.py`/`adapters.py` (gradient-descent, learned/heuristic models via the adapter pattern) and `oracle_mpc.py`/`genesis_oracle.py`/`sampling_optimizers.py` (Genesis-as-model CEM/MPPI ceiling baseline) |
-| `run_experiments.py` / `run_oracle_mpc.py` | Batch/entry-point drivers for the two MPC variants |
+| `simple_mpc/` | Three MPC variants: `mpc.py`/`adapters.py` (gradient-descent, learned/heuristic models via the adapter pattern); `oracle_mpc.py`/`genesis_oracle.py`/`sampling_optimizers.py` (Genesis-as-model CEM/MPPI ceiling baseline); `human_mpc.py`/`human_grid_search.py` (human-piloted variant of the same ceiling baseline, grid-search-refined) |
+| `run_experiments.py` / `run_oracle_mpc.py` / `human_mpc_gui.py` | Batch/entry-point drivers for the three MPC variants |
 | `tests/` | pytest suite (Genesis-free tests run without a GPU; a few require Genesis) |
 
 ## Doc map — read (and update) the one that owns what you're touching
@@ -40,10 +42,11 @@ on.
 | `docs/INTERFACES.md` | Data contracts: batch dict keys per representation, `ModelOutput`, the MPC adapter surface (§3.4) and its `per_sample` loss-cost variant (§3.5), coordinate conventions |
 | `docs/UTILITIES.md` | Utility ownership boundaries: what belongs in `transforms/functional.py` vs `utils.py` vs a scoped module, and the on_phase-hook / write_video_frame pattern as the reference example |
 | `docs/oracle_mpc_design.md` | Full design reference for the oracle MPC subsystem: snapshot/restore state management, sampling optimizers, occupancy-representation caveats, config schema, known limitations |
+| `docs/human_demo_design.md` | Full design reference for the human-demonstration subsystem: the 5D action convention, local grid-search refinement, GUI interaction model, output-schema/recording parity with `run_oracle_mpc.py` |
 | `.github/skills/mpc-experiments/SKILL.md` | Deep-dive operational guide for the learned-model MPC framework specifically (adapters, reward types, running/debugging experiments) |
 
 If you're not sure where something belongs, it's almost certainly one of
-these four `docs/` files, not a new one — check the Design Philosophy in
+these five `docs/` files, not a new one — check the Design Philosophy in
 `ARCHITECTURE.md` first; it explains *why* the boundaries are drawn where
 they are, which usually settles where a change's documentation belongs too.
 

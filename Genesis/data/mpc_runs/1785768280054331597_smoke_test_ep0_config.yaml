@@ -1,0 +1,78 @@
+box:
+  friction: 0.3
+  vol:
+  - 0.128
+  - 0.128
+  - 0.04
+  wall_thickness: 0.02
+data_collection:
+  record_transitions: true
+  sampled:
+    particle_sizes:
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+    - !!python/tuple
+      - 0.005
+      - 0.005
+      - 0.005
+  transitions_dir: data/mpc_runs
+material:
+  density: 750.0
+  friction: 0.25
+  n_particles: 8
+  particle_size: 0.005
+  shape: cube
+  vol:
+  - 0.12672
+  - 0.12672
+  - 0.05
+plate:
+  size:
+  - 0.04
+  - 0.002
+  - 0.01
+  speed: 0.125
+rigid_options:
+  box_box_detection: true
+  iterations: 10
+  ls_iterations: 10
+  ls_tolerance: 0.05
+  tolerance: 0.0001
+  use_contact_island: true
+  use_hibernation: false
+simulation:
+  backend: gpu
+  dt: 0.004
+  performance_mode: true
+  pos_ctrl_steps: 60
+  precision: '32'
+  rendered_envs_idx:
+  - 0
+  settle_steps: 20
+  substeps: 5

@@ -51,6 +51,7 @@ from Genesis.sandbox_manipulation_clean import SandboxManipulation
 from env.genesis_env import GenesisEnv
 from utils import write_video_frame
 from transforms.functional import (
+    action_to_pose,
     genesis_particles_to_cam3d,
     footprint_radius_voxels,
     particles_to_occupancy,
@@ -183,6 +184,10 @@ class GenesisOracleEnv:
     def step(self, action: np.ndarray, video_recorder=None) -> np.ndarray:
         """Execute a push, broadcast to ALL envs, and step them in lockstep.
 
+        ``action`` is ``[sx, sy, ex, ey]`` (yaw derived from travel direction)
+        or ``[sx, sy, ex, ey, angle_norm]`` (explicit yaw) — see
+        ``transforms.functional.action_to_pose``.
+
         Because every env receives the identical action from an identical
         (post-broadcast) state, all K envs end this call in the same state —
         keeping them synchronized for the next planning phase.
@@ -194,10 +199,10 @@ class GenesisOracleEnv:
         """
         import genesis as gs
 
-        sx, sy, ex, ey = (float(action[0]), float(action[1]),
-                          float(action[2]), float(action[3]))
-        dxy   = math.hypot(ex - sx, ey - sy)
-        angle = math.atan2(ey - sy, ex - sx) + math.pi / 2 if dxy > 1e-6 else 0.0
+        sx_t, sy_t, ex_t, ey_t, angle_t = action_to_pose(
+            torch.as_tensor(action, dtype=torch.float32))
+        sx, sy, ex, ey, angle = (float(sx_t), float(sy_t), float(ex_t),
+                                  float(ey_t), float(angle_t))
 
         z_op = float(self._sim._operation_height)
         p_start = torch.tensor([sx, sy, z_op], dtype=torch.float32, device=gs.device
@@ -323,8 +328,11 @@ class GenesisOracleEnv:
 
         Parameters
         ----------
-        act_seqs : (n_envs, n_ahead, 4) tensor — [sx, sy, ex, ey] per step,
-            one independent candidate sequence per env.
+        act_seqs : (n_envs, n_ahead, 4) or (n_envs, n_ahead, 5) tensor —
+            [sx, sy, ex, ey] (yaw derived from travel direction) or
+            [sx, sy, ex, ey, angle_norm] (explicit yaw) per step, one
+            independent candidate sequence per env — see
+            ``transforms.functional.action_to_pose``.
         snapshot : dict from ``snapshot_particles()`` — the frozen state to
             restore onto every env before rolling out (NOT env 0's live
             state, which may already have drifted from a previous rollout —
@@ -380,13 +388,7 @@ class GenesisOracleEnv:
         step_positions = []
         for s in range(n_ahead):
             a = act_seqs[:, s, :].to(device=gs.device, dtype=torch.float32)
-            sx, sy, ex, ey = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-            dxy   = torch.hypot(ex - sx, ey - sy)
-            angle = torch.where(
-                dxy > 1e-6,
-                torch.atan2(ey - sy, ex - sx) + math.pi / 2,
-                torch.zeros_like(dxy),
-            )
+            sx, sy, ex, ey, angle = action_to_pose(a)
             z_col   = torch.full_like(sx, z_op)
             p_start = torch.stack([sx, sy, z_col], dim=1)
             p_stop  = torch.stack([ex, ey, z_col], dim=1)

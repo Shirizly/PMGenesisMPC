@@ -254,6 +254,20 @@ end of an episode, the sampling optimizers' mean/std tensors are shaped by
 past the nominal number of remaining real steps near the end of an episode is
 harmless (only `act_seq[0]` is ever executed for real).
 
+### Action convention: 4D everywhere here, 5D available for other callers
+
+Every action this module and its optimizers produce (`action_sampler.py`,
+`sampling_optimizers.py`) is 4D — `[sx, sy, ex, ey]` — and
+`GenesisOracleEnv.step()`/`.rollout_candidates()` derive the plate yaw as
+perpendicular to travel direction, exactly as before. That derivation now
+lives in one shared place, `transforms.functional.action_to_pose`, which
+also accepts an optional 5th component (`angle_norm`, a normalized `[0, 1)`
+plate yaw independent of travel direction) — used by the human-demonstration
+subsystem (`docs/human_demo_design.md`), not by anything in this module.
+Nothing here constructs or expects a 5th component; this is purely a note
+that `GenesisOracleEnv`'s real-step/rollout call sites are shared with that
+other subsystem, so a change to `action_to_pose` affects both.
+
 ## File map
 
 | File | Responsibility |
@@ -262,7 +276,7 @@ harmless (only `act_seq[0]` is ever executed for real).
 | `simple_mpc/oracle_mpc.py` | `run_oracle_mpc` (the MPC loop) + `load_oracle_config`; returns the same result-dict schema as `run_simple_mpc` |
 | `simple_mpc/sampling_optimizers.py` | `SamplingOptimizer`, `CEMOptimizer`, `MPPIOptimizer`, `make_sampling_optimizer` |
 | `simple_mpc/occupancy_reward.py` | `OccupancyReward` — `compute_score_tensor` (reward map) and `goal_occupancy_mask` (binary loss target), shared with the learned-model MPC path |
-| `transforms/functional.py` | `particles_to_occupancy(..., footprint_radius=...)`, `footprint_radius_voxels(..., shape_factor=...)`, `genesis_particles_to_cam3d` |
+| `transforms/functional.py` | `particles_to_occupancy(..., footprint_radius=...)`, `footprint_radius_voxels(..., shape_factor=...)`, `genesis_particles_to_cam3d`, `action_to_pose` (4D-derived-yaw / 5D-explicit-yaw action convention — see below and `docs/human_demo_design.md`) |
 | `training/losses.py` | `EulerianCombinedLoss`'s `per_sample` mode, `ScoreMapWeightedLoss` |
 | `Genesis/sandbox_manipulation_clean.py` | `execute_action(..., on_phase=...)`, `set_particle_state`, `broadcast_state_from_env`, `push_and_record`/`flush_transitions` — shared, not oracle-specific |
 | `Genesis/transition_buffer.py` | `TransitionBuffer` — accumulates/saves the transitions `push_and_record` records (see UTILITIES.md §1.2) |
