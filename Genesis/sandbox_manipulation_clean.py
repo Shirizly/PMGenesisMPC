@@ -138,8 +138,7 @@ class SandboxManipulation:
         self._horizontal_dof_fix[:, 0] = self._operation_height
 
         self._particle_state = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
-        self._particle_state_ = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
-        
+
         self._zero_n_envsx3 = torch.zeros((self._n_envs, 3), device=gs.device)
 
         # pre-allocated freeze buffer for reached-goal envs in the sweep loop
@@ -157,6 +156,31 @@ class SandboxManipulation:
             update_visualizer=_show,
             refresh_visualizer=_show,
         )
+
+    def _default_max_collision_pairs(self) -> int:
+        """Contact-pair budget to preallocate when the config doesn't set one.
+
+        Genesis's own default is a flat 150, which is independent of how many
+        bodies are in the scene and is already marginal for ~50 particles: a
+        settled pile needs roughly one floor contact per particle plus a
+        neighbour contact for most of them, before the plate and walls are
+        counted. Overflow is *not* a clean failure — the broadphase sets an
+        error bit and stops adding pairs, so the remaining contacts are
+        silently dropped and the step is simulated with incomplete contact
+        physics (see ``_check_contact_budget`` for why that error bit never
+        surfaces here).
+
+        Raw step time is independent of this value — measured flat across
+        150/800 at both settings of ``box_box_detection`` — so overshooting
+        costs memory (the constraint Jacobian is
+        ``O(max_collision_pairs x contacts_per_pair x n_dofs x n_envs)``) and
+        the per-step ``collider.reset()`` in the settle/sweep loops, but not
+        the physics itself. Hence a scaled default with headroom rather than a
+        tight fit; set ``rigid_options.max_collision_pairs`` explicitly to
+        trade VRAM for envs at large ``n_particles``.
+        """
+        n_particles = int(self._material_params.get("n_particles") or 0)
+        return max(150, 4 * n_particles + 64)
 
     def _init_scene(self):
         v_x, _, v_z = self._box_params["vol"]
@@ -194,8 +218,8 @@ class SandboxManipulation:
         rendered_envs_idx = self._sim_params.get('rendered_envs_idx', None)
         self._scene = gs.Scene(
             sim_options=gs.options.SimOptions(
-                dt       = self._config["simulation"].get('dt', 4e3),
-                substeps = self._config["simulation"].get('substeps', 1),
+                dt       = self._config["simulation"].get('dt', 4e-3),
+                substeps = self._config["simulation"].get('substeps', 5),
             ),
             rigid_options=gs.options.RigidOptions(
                 iterations=rigid_cfg.get("iterations", 50),
@@ -205,7 +229,8 @@ class SandboxManipulation:
                 box_box_detection=rigid_cfg.get("box_box_detection", False),
                 use_contact_island=rigid_cfg.get("use_contact_island", False),
                 use_hibernation=rigid_cfg.get("use_hibernation", False),
-                max_collision_pairs=rigid_cfg.get("max_collision_pairs", 150),
+                max_collision_pairs=rigid_cfg.get(
+                    "max_collision_pairs", self._default_max_collision_pairs()),
                 enable_multi_contact=rigid_cfg.get("enable_multi_contact", True),
             ),
             viewer_options = viewer_options,
@@ -253,9 +278,16 @@ class SandboxManipulation:
         }
         
         # add tool
+        #
+        # friction must be set explicitly: Genesis defaults an unset geom
+        # friction to 1.0 and combines a contact as max(mu_a, mu_b), so
+        # leaving it None pins *every* plate-particle contact at 1.0 and makes
+        # the sampled particle friction have no effect whatsoever at the tool
+        # interface — the one interface the action actually acts through.
         self.plate = self._scene.add_entity(
             material=gs.materials.Rigid(
                 rho=3000,
+                friction=float(self._plate_params.get("friction", 0.3)),
             ),
             morph=gs.morphs.Box(
                 pos=(0, 0, height * 2),
@@ -446,10 +478,25 @@ class SandboxManipulation:
             values = np.maximum(values, min_value)
         return values
 
+    # Genesis' RHO_OBJECT — the density a rigid link resolves to when its
+    # material leaves rho unset (genesis/engine/entities/rigid_entity/
+    # rigid_link.py). Particles are constructed without an explicit material
+    # (see utilities/materials.py), so this, not the configured density, is
+    # what their mass is actually built from.
+    _GENESIS_DEFAULT_RHO = 600.0
+
     def _set_particle_density_value(self, particle, density: float):
-        old_density = getattr(particle.material, "rho", None)
+        # Rescale mass from whatever density the particle's mass currently
+        # reflects. On the first call material.rho is still None — meaning the
+        # built mass came from Genesis' default rho, not from any configured
+        # value — so fall back to that default rather than skipping the update.
+        # Skipping it (the previous behaviour) left every particle at the
+        # default density while the saved config recorded the sampled one, and
+        # every subsequent batch then rescaled from the wrong base, leaving all
+        # masses at 600/750 = 0.8x their recorded density.
+        old_density = getattr(particle.material, "rho", None) or self._GENESIS_DEFAULT_RHO
         particle.material.rho = float(density)
-        if getattr(self._scene, "is_built", False) and old_density is not None and old_density > 0:
+        if getattr(self._scene, "is_built", False) and old_density > 0:
             particle.set_mass(particle.get_mass() * (float(density) / float(old_density)))
 
     def set_material_properties(self, setting):
@@ -523,6 +570,15 @@ class SandboxManipulation:
             return
         n_active = getattr(self, '_n_active', n_particles)
 
+        # Number of stacked layers to spread the particles over on respawn.
+        # 1 reproduces the original single-layer behaviour exactly and is
+        # always tried first; it is only incremented when a layer genuinely
+        # cannot be packed (see the retry handler below), which is what makes
+        # particle counts above the box's single-layer RSA capacity
+        # (~140 cubes of 5 mm in a 128 mm box) reachable at all. Stacked
+        # layers are dropped, not interpenetrating: the caller's subsequent
+        # update_material_state() settle collapses them into a natural pile.
+        n_layers = 1
         max_retries = 10
         for attempt in range(max_retries):
             try:
@@ -554,52 +610,84 @@ class SandboxManipulation:
                 upper = inner_max - collision_half_extents
 
                 positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
-                placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
                 order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
                 order = order[order < n_active]  # only place the first n_active particles
                 candidate_batch = max(1024, min(4096, 64 * max(n_active, 1)))
                 min_gap = 1e-3
 
-                for particle_idx_tensor in order:
-                    particle_idx = int(particle_idx_tensor.item())
-                    active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
-                    span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
-                    z_pos = inner_min[2] + half_extents[particle_idx, 2] + min_gap
-                    for _ in range(128):
-                        active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
-                        if active_idx.numel() == 0:
-                            break
-                        candidate_xy = (
-                            torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
-                            * span_xy
-                            + lower[particle_idx, :2]
-                        )
-                        placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
-                        if placed_idx.numel() == 0:
-                            valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
-                        else:
-                            delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
-                            min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
-                            valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
-                        has_valid = valid.any(dim=1)
-                        accepted = active_idx[has_valid]
-                        first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
-                        positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
-                        positions[accepted, particle_idx, 2] = z_pos
-                        active[accepted] = False
-                    if active.any():
-                        raise RuntimeError("placement_failed")
-                    placed[particle_idx] = True
+                # Vertical pitch between stacked layers — tall enough that the
+                # tallest particle in a layer clears the layer below it.
+                layer_pitch = float(2.0 * half_extents[:, 2].max().item()) + min_gap
+                top_of_stack = float(inner_min[2]) + min_gap + n_layers * layer_pitch
+                if top_of_stack > float(inner_max[2]):
+                    raise RuntimeError(
+                        f"Cannot spawn {n_active} particles: {n_layers} stacked layers "
+                        f"need {top_of_stack:.4f} m of box interior but only "
+                        f"{float(inner_max[2]):.4f} m is available (box walls are "
+                        f"{self._box_params['vol'][2]:.3f} m tall). Use smaller "
+                        f"particles, a taller/wider box, or fewer particles."
+                    )
+
+                # Split the largest-first placement order across layers (strided,
+                # so each layer gets a comparable size mix) and pack each layer
+                # independently: overlap is only a constraint within a layer,
+                # since layers are vertically separated.
+                for layer_idx in range(n_layers):
+                    layer_order = order[layer_idx::n_layers]
+                    placed = torch.zeros(n_particles, dtype=torch.bool, device=gs.device)
+                    layer_z = inner_min[2] + min_gap + layer_idx * layer_pitch
+                    for particle_idx_tensor in layer_order:
+                        particle_idx = int(particle_idx_tensor.item())
+                        active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
+                        span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
+                        z_pos = layer_z + half_extents[particle_idx, 2]
+                        for _ in range(128):
+                            active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+                            if active_idx.numel() == 0:
+                                break
+                            candidate_xy = (
+                                torch.rand((active_idx.numel(), candidate_batch, 2), device=gs.device)
+                                * span_xy
+                                + lower[particle_idx, :2]
+                            )
+                            placed_idx = torch.nonzero(placed, as_tuple=False).squeeze(1)
+                            if placed_idx.numel() == 0:
+                                valid = torch.ones((active_idx.numel(), candidate_batch), dtype=torch.bool, device=gs.device)
+                            else:
+                                delta = candidate_xy.unsqueeze(2) - positions[active_idx][:, placed_idx, :2].unsqueeze(1)
+                                min_sep = collision_half_extents[particle_idx, :2] + collision_half_extents[placed_idx, :2] + min_gap
+                                valid = (torch.abs(delta) >= min_sep.view(1, 1, -1, 2)).any(dim=3).all(dim=2)
+                            has_valid = valid.any(dim=1)
+                            accepted = active_idx[has_valid]
+                            first_valid = valid[has_valid].to(torch.int64).argmax(dim=1)
+                            positions[accepted, particle_idx, :2] = candidate_xy[has_valid, first_valid]
+                            positions[accepted, particle_idx, 2] = z_pos
+                            active[accepted] = False
+                        if active.any():
+                            raise RuntimeError("placement_failed")
+                        placed[particle_idx] = True
 
                 envs_idx = torch.arange(self._n_envs, device=gs.device)
-                # Move parked (inactive) particles to a fixed spot outside the box
+                # Move parked (inactive) particles outside the box, spread over
+                # a grid rather than heaped on one point: parking them all at
+                # an identical position piles every inactive particle into a
+                # single permanent contact cluster, which consumes the contact
+                # budget (see _default_max_collision_pairs) and costs solver
+                # time on every step of every env, for particles that are not
+                # even part of the experiment.
                 if n_active < n_particles:
+                    n_parked = n_particles - n_active
                     park = torch.tensor(self._park_pos, dtype=torch.float32, device=gs.device)
-                    positions[:, n_active:, :] = park.view(1, 1, 3).expand(
-                        self._n_envs, n_particles - n_active, 3)
-                for particle_idx, particle in enumerate(self.material):
-                    particle.set_pos(positions[:, particle_idx, :], envs_idx=envs_idx)
-                    particle.set_quat(self._random_particle_quats(particle, self._n_envs), envs_idx=envs_idx)
+                    pitch = float(2.0 * half_extents[:, :2].max().item()) + 5e-3
+                    cols = int(math.ceil(math.sqrt(n_parked)))
+                    idx = torch.arange(n_parked, device=gs.device)
+                    offsets = torch.zeros((n_parked, 3), device=gs.device)
+                    offsets[:, 0] = (idx % cols).to(torch.float32) * pitch
+                    offsets[:, 1] = torch.div(idx, cols, rounding_mode="floor").to(torch.float32) * pitch
+                    positions[:, n_active:, :] = (park.view(1, 3) + offsets).unsqueeze(0).expand(
+                        self._n_envs, n_parked, 3)
+                self._write_particle_poses(
+                    positions, self._random_particle_quats_batched(), envs_idx)
                 if self._particle_dofs_idx.numel() > 0:
                     self._scene.rigid_solver.set_dofs_velocity(
                         torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
@@ -610,7 +698,15 @@ class SandboxManipulation:
                 break
             except RuntimeError as e:
                 if str(e) == "placement_failed":
-                    print(f"Placement of particles failed due to overlap, retrying {attempt+1}/{max_retries}...")
+                    # RSA placement is stochastic, so give the current layer
+                    # count one more roll of the dice before concluding the
+                    # box is genuinely too full and adding a layer.
+                    if attempt % 2 == 1:
+                        n_layers += 1
+                    print(
+                        f"Placement of particles failed due to overlap, retrying "
+                        f"{attempt+1}/{max_retries} with {n_layers} layer(s)..."
+                    )
                     if attempt == max_retries - 1:
                         raise RuntimeError(
                             f"Could not randomly shuffle particles without overlap after {max_retries} attempts. "
@@ -621,26 +717,48 @@ class SandboxManipulation:
                 else:
                     raise
 
-    def _random_particle_quats(self, particle, n_envs: int) -> torch.Tensor:
-        if not hasattr(particle.morph, "size") and not hasattr(particle.morph, "height"):
-            return torch.tensor((1.0, 0.0, 0.0, 0.0), device=gs.device).repeat(n_envs, 1)
+    def _write_particle_poses(self, pos: torch.Tensor, quat: torch.Tensor,
+                              envs_idx: torch.Tensor) -> None:
+        """Write every particle's pose in two batched calls instead of 2N.
 
-        roll = torch.zeros(n_envs, device=gs.device)
-        pitch = torch.zeros(n_envs, device=gs.device)
-        yaw = torch.rand(n_envs, device=gs.device) * math.tau
+        ``RigidEntity.set_pos``/``set_quat`` each run a forward-kinematics pass
+        over the *whole scene* (``skip_forward=False`` by default), so the
+        obvious per-particle loop costs 2N kernel launches and 2N full-scene FK
+        passes — 400 of each at n_particles=200, on every reset and every
+        snapshot restore (the latter being in the oracle-MPC hot path). The
+        solver-level setters take a link-index array, so the same work is two
+        launches and a single FK pass at the end.
 
-        cr, sr = torch.cos(roll * 0.5), torch.sin(roll * 0.5)
-        cp, sp = torch.cos(pitch * 0.5), torch.sin(pitch * 0.5)
-        cy, sy = torch.cos(yaw * 0.5), torch.sin(yaw * 0.5)
-        return torch.stack(
-            (
-                cr * cp * cy + sr * sp * sy,
-                sr * cp * cy - cr * sp * sy,
-                cr * sp * cy + sr * cp * sy,
-                cr * cp * sy - sr * sp * cy,
-            ),
-            dim=1,
+        pos  : (n_envs, n_particles, 3)
+        quat : (n_envs, n_particles, 4)
+        """
+        solver = self._scene.rigid_solver
+        solver.set_base_links_pos(pos, links_idx=self._particle_links_idx,
+                                  envs_idx=envs_idx, skip_forward=True)
+        solver.set_base_links_quat(quat, links_idx=self._particle_links_idx,
+                                   envs_idx=envs_idx, skip_forward=False)
+
+    def _random_particle_quats_batched(self) -> torch.Tensor:
+        """Random spawn orientation for every particle, in one shot.
+
+        Returns (n_envs, n_particles, 4). Particles whose morph carries no
+        orientable extent (spheres) keep the identity quaternion; the rest get
+        a uniform random yaw, which for roll=pitch=0 reduces to
+        (cos(yaw/2), 0, 0, sin(yaw/2)).
+        """
+        n_particles = len(self.material)
+        orientable = torch.tensor(
+            [hasattr(p.morph, "size") or hasattr(p.morph, "height")
+             for p in self.material],
+            dtype=torch.bool, device=gs.device,
         )
+        yaw = torch.rand((self._n_envs, n_particles), device=gs.device) * math.tau
+        yaw = torch.where(orientable.unsqueeze(0), yaw, torch.zeros_like(yaw))
+        half = yaw * 0.5
+        quat = torch.zeros((self._n_envs, n_particles, 4), device=gs.device)
+        quat[:, :, 0] = torch.cos(half)
+        quat[:, :, 3] = torch.sin(half)
+        return quat
 
     def _get_particle_positions(self):
         return self._scene.rigid_solver.get_links_pos(links_idx=self._particle_links_idx)
@@ -658,9 +776,10 @@ class SandboxManipulation:
         """
 
         # Hold plate still
-        self.plate.set_pos(self.plate.get_pos())
+        plate_pos = self.plate.get_pos()
+        self.plate.set_pos(plate_pos)
         self.plate.control_dofs_position_velocity(
-            self.plate.get_pos(),
+            plate_pos,
             self._zero_n_envsx3,
             dofs_idx_local=[0, 1, 2]
         )
@@ -670,8 +789,76 @@ class SandboxManipulation:
             self.plate.set_dofs_position(frozen_plate_dofs)
             self._step_scene()
 
+        self._check_contact_budget()
+
         self._particle_state[:, :, 0:3] = self._get_particle_positions()
         self._particle_state[:, :, 3:] = self._get_particle_quats()
+
+    def _check_contact_budget(self) -> None:
+        """Warn (once) if the pile is close to exhausting the contact budget.
+
+        Genesis reports contact-pair overflow by setting an error bit that
+        ``Simulator.step`` inspects periodically. That mechanism cannot fire
+        here: ``RigidSolver.set_dofs_position`` clears the error bit as a side
+        effect, and both this settle loop and the sweep loop call it on every
+        step, so the bit is always wiped before the next check reads it. The
+        failure would therefore be completely silent — contacts dropped, wrong
+        physics recorded, no exception — which is exactly the kind of thing
+        that must not go unnoticed in collected training data. So check the
+        counter directly instead of relying on Genesis to complain.
+        """
+        if getattr(self, "_contact_budget_warned", False):
+            return
+        try:
+            usage = self.contact_budget_usage()
+        except Exception:
+            self._contact_budget_warned = True   # counters unavailable; don't retry
+            return
+        for what, used, cap in (
+            ("broad-phase candidate pairs", usage["broad_pairs"], usage["broad_cap"]),
+            ("contact points", usage["contact_points"], usage["contact_cap"]),
+        ):
+            if used >= 0.9 * cap:
+                self._contact_budget_warned = True
+                self._log(
+                    f"WARNING: {used}/{cap} {what} in use. Past the cap Genesis "
+                    f"stops adding contacts and only flags it via an error bit "
+                    f"that this class's per-step set_dofs_position clears before "
+                    f"it can be read — so an overflow here is silent, and the "
+                    f"recorded state would come from incomplete contact physics. "
+                    f"Raise rigid_options.max_collision_pairs."
+                )
+
+    def contact_budget_usage(self) -> dict:
+        """Peak collider occupancy across envs, against its two real limits.
+
+        Genesis bounds collision work in two independent places, and
+        ``max_collision_pairs`` (``mcp``) sets both:
+
+        * broad-phase candidate pairs, capped at ``mcp * 8``
+          (``multiplier_collision_broad_phase``)
+        * narrow-phase contact *points*, capped at
+          ``mcp * n_contacts_per_pair`` — where ``n_contacts_per_pair`` is 5
+          normally but 16 once ``box_box_detection`` is on with more than one
+          box, which is this scene's configuration
+
+        The pair count and the point count differ by a large factor, so they
+        must be compared against their own caps — a settled pile of cubes
+        produces roughly four contact points per floor contact.
+        """
+        collider = self._scene.rigid_solver.collider
+        state, info = collider._collider_state, collider._collider_info
+        broad_cap = int(torch.as_tensor(info.max_collision_pairs_broad.to_torch()).max())
+        ncp = int(collider._collider_static_config.n_contacts_per_pair)
+        mcp = int(torch.as_tensor(info.max_collision_pairs.to_torch()).max())
+        return {
+            "broad_pairs": int(torch.as_tensor(state.n_broad_pairs.to_torch()).max()),
+            "broad_cap": broad_cap,
+            "contact_points": int(torch.as_tensor(state.n_contacts.to_torch()).max()),
+            "contact_cap": mcp * ncp,
+            "max_collision_pairs": mcp,
+            "n_contacts_per_pair": ncp,
+        }
 
     def set_particle_state(self, pos: torch.Tensor, quat: torch.Tensor) -> None:
         """
@@ -695,11 +882,11 @@ class SandboxManipulation:
         call, so no explicit plate reset is needed between rollouts.
         """
         envs_idx = torch.arange(self._n_envs, device=gs.device)
-        for particle_idx, particle in enumerate(self.material):
-            particle.set_pos(
-                pos[:, particle_idx, :].expand(self._n_envs, 3), envs_idx=envs_idx)
-            particle.set_quat(
-                quat[:, particle_idx, :].expand(self._n_envs, 4), envs_idx=envs_idx)
+        self._write_particle_poses(
+            pos.expand(self._n_envs, -1, -1).contiguous(),
+            quat.expand(self._n_envs, -1, -1).contiguous(),
+            envs_idx,
+        )
         if self._particle_dofs_idx.numel() > 0:
             self._scene.rigid_solver.set_dofs_velocity(
                 torch.zeros((self._n_envs, self._particle_dofs_idx.numel()), device=gs.device),
@@ -792,9 +979,16 @@ class SandboxManipulation:
                     zero_velocity=True,
                 )
 
+            # zero_velocity=False: this call constrains z/roll/pitch/yaw only,
+            # but RigidEntity.set_dofs_position defaults zero_velocity=True and
+            # zeroes *all six* dofs regardless of dofs_idx_local. Leaving the
+            # default on reset the plate's x/y velocity every single step, so
+            # the sweep restarted from rest at 250 Hz and the tool carried no
+            # momentum into the pile.
             self.plate.set_dofs_position(
                 self._horizontal_dof_fix,
                 dofs_idx_local=self._horizontal_dofs_local,
+                zero_velocity=False,
             )
             self._step_scene()
 

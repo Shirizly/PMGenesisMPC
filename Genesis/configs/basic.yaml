@@ -31,4 +31,7 @@ safety_margin : 0.005
 plate:
   speed : 0.125 # m/s
   size : [0.04, 0.002, 0.01]
+  friction : 0.3                            # must be set: unset -> Genesis default 1.0,
+                                            # and contacts combine as max(mu_plate, mu_particle),
+                                            # which would mask the sampled particle friction
 
