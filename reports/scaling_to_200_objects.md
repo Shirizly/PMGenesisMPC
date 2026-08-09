@@ -94,9 +94,49 @@ sim time.
 
 ---
 
-## 3. `max_collision_pairs` — a silent data-integrity bug
+## 3. `max_collision_pairs` — real mechanism, much smaller than first feared
 
-*(filled in from `probe_contact_counts.py`)*
+Two things are true and independent.
+
+**The overflow really is silent.** On overflow Genesis's broadphase sets an
+error bit and stops adding pairs, dropping the rest. That bit is surfaced by a
+periodic `check_errno()` at the *start* of `Simulator.step` — but
+`RigidSolver.set_dofs_position` clears `_errno` as a side effect, and both the
+settle loop and the sweep loop call it every step. So the flag is always wiped
+before it can be read, and an overflow here would never raise. That is why
+`SandboxManipulation.contact_budget_usage()` / `_check_contact_budget()` now
+read the counters directly.
+
+**But the pile does not come close to the cap.** Measured for 50 cubes of 5 mm,
+settled and then pushed:
+
+| quantity | used | cap at `mcp`=264 |
+|---|---|---|
+| broad-phase candidate pairs | 51 | 2112 (`mcp × 8`) |
+| narrow-phase contact points | 211 | 4224 (`mcp × n_contacts_per_pair`, ncp=16) |
+
+which implies a required `max_collision_pairs` of only **14**. A settled pile is
+mostly one floor contact per cube — four contact *points* each under
+`box_box_detection` — plus a few neighbours.
+
+Two corrections to what I said earlier in this investigation:
+
+- I first compared `n_contacts` against `max_collision_pairs`. That is wrong:
+  `n_contacts` counts contact **points** (cap `mcp × ncp`), while the pair
+  limit is `n_broad_pairs` (cap `mcp × 8`). The two differ by more than an
+  order of magnitude.
+- Consequently **the flat default of 150 is not the bottleneck I suspected**,
+  and my first scaled default (`4n + 64` = 864 at n=200) was 6–16× larger than
+  needed. Since the constraint Jacobian is
+  `O(mcp × ncp × n_dofs × n_envs)` and raw step time is *independent* of `mcp`,
+  an oversized cap buys nothing and directly costs parallel environments. The
+  default is now `max(150, n_particles)`, with the runtime check catching an
+  under-estimate loudly.
+
+**The env-count table in §1.1 was measured with `mcp = 4n`, so it understates
+what fits.** At n=200 the cap drops 864 → 200, a ~4× reduction in the dominant
+allocation; the ceiling should rise well above the 4 envs measured. That needs
+re-measuring on a free GPU.
 
 ---
 
@@ -139,9 +179,68 @@ walls span z ∈ [−0.01, +0.03] while the floor surface sits at z = +0.01.
 
 ---
 
-## 5. The pusher plate
+## 5. The pusher plate — modelled as a gantry axis
 
-*(filled in from `probe_plate_dynamics.py`)*
+### 5.1 The premise was inverted
+
+The plate is **2.4 g** — `rho=3000` on an `[0.04, 0.002, 0.01]` box — making it
+the lightest dynamic object in the scene, not a heavy one. What actually kept
+it on course was that z/roll/pitch/yaw were hard-set every step and its x/y
+velocity was zeroed every step.
+
+### 5.2 What was actually wrong
+
+Measured on one 90 mm crossing sweep, 50 cubes of 5 mm, comparing the original
+configuration against the new one:
+
+| | tracking error vs commanded path | reaction displacement (loaded − free) | cruise speed |
+|---|---|---|---|
+| **legacy** (endpoint target, kp=0.8, no armature, velocity zeroed) | mean 9.24 mm, **max 23.90 mm** | mean 0.07 mm, max 0.12 mm | 102 mm/s |
+| **legacy, dense pile** (ρ=5000) | same | mean 0.33 mm, max 0.46 mm | 102 mm/s |
+| **current** (trapezoid + gantry actuator) | mean 0.32 mm, max 0.92 mm | mean 0.00 mm, **max 0.04 mm** | **124.0 mm/s vs 125 commanded** |
+
+The headline: **granular reaction was never displacing the tool much** — 0.12 mm
+at ρ=1000, 0.46 mm at ρ=5000, the densest material in the sweep. The dominant
+trajectory error was the *control law*, which put the tool up to **23.9 mm**
+(nearly five particle diameters) off its commanded straight line. So the heavy-
+plate workaround was aimed at the wrong problem; the tool wasn't being pushed
+around, it was being driven wrong.
+
+### 5.3 The model now used
+
+Matching a 3D-printer-style Cartesian gantry: heavy carriage, steppers with
+large force margin, trapezoidal velocity profile.
+
+- **`set_dofs_armature(moving_mass)` on x/y/z** — reflected drivetrain inertia,
+  added to the mass-matrix diagonal the constraint solver already uses. This is
+  the right knob rather than a denser plate, which would also change the tool's
+  weight and its contact response.
+- **Gains derived from mass and bandwidth**: `kp = m·ω²`, `kv = 2ζmω` at ζ=1.
+  The 15 Hz default gives ω ≈ 94 rad/s against a 0.8 ms substep (ω·h ≈ 0.075).
+- **`set_dofs_force_range(±max_force)`** — previously unbounded; a real stepper
+  loses steps rather than applying unlimited force to a jam.
+- **A trapezoidal position + velocity reference** replaces the endpoint target.
+  This is the change that fixes the speed: commanding the endpoint makes the PD
+  settle at `v = v_cruise + kp·Δ/kv`, so speed depended on distance remaining.
+
+All four are config-driven under `plate:` in `configs/basic.yaml`.
+
+Side benefits: the sweep now takes **208 steps instead of 307** (−32 %), because
+the step count comes from the trapezoid's actual duration rather than a `1.7×`
+fudge factor that was compensating for the old speed error; and the per-step
+`.nonzero()` and `.item()` syncs are gone, since the reference holds at the goal
+and no freeze bookkeeping is needed.
+
+### 5.4 Known residual
+
+The sweep lands **0.92 mm** short of target. It is *not* a settling transient
+(60 settle steps gives 0.95 mm) and *not* disturbance stiffness (2.8× the gain
+gives 0.86 mm) — it is gain-insensitive and unexplained. It currently sits just
+inside the 1.0 mm `goal_threshold`, so `reached_goal` passes, and the recorded
+action uses the *actual* final position (`collect_data_samples` overwrites
+`p_stop` with `final_pos`), so it is not a labelling error. But the margin is
+thin: if it ever crosses 1 mm, samples get discarded as failures. Worth either
+understanding or giving `goal_threshold` explicit margin before a long run.
 
 ---
 
@@ -220,7 +319,16 @@ All verified against the Genesis 0.4.5 source, and asserted end-to-end by
 | 7 | `set_n_active` parked every inactive particle at the **same point**, heaping them into one permanent contact cluster. | spread over a grid | 100 parked, 127 mm max separation (was 0) |
 | 8 | `_particle_state_` allocated, never used. | removed | — |
 
-### Consequence of fix 1 that needs a decision
+### Fix 9 — the actuator model (resolves the consequence of fix 1)
+
+Fix 1 exposed that neither the old nor the naively-fixed control law tracked the
+commanded speed. Replaced with a gantry model: reflected inertia via armature,
+gains from mass × bandwidth, a force limit, and a trapezoidal reference. See §5
+for the measurements. Verified by `verify_fixes.py`: cruise speed **124.0 mm/s
+against 125 commanded (0.99×)**, where the endpoint-target law could not track a
+commanded speed at all by construction.
+
+### Superseded note (kept for the record)
 
 The plate was previously restarted from rest every step, and the sweep's step
 count carries a `1.7×` fudge factor that was silently absorbing the resulting

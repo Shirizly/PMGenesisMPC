@@ -141,10 +141,20 @@ class SandboxManipulation:
 
         self._zero_n_envsx3 = torch.zeros((self._n_envs, 3), device=gs.device)
 
-        # pre-allocated freeze buffer for reached-goal envs in the sweep loop
-        # layout: [x, y, z=operation_height, roll=0, pitch=0, yaw]
-        self._freeze_dofs_buf = torch.zeros((self._n_envs, 6), device=gs.device)
-        self._freeze_dofs_buf[:, 2] = self._operation_height
+        # ---- actuator model (see configs/basic.yaml's `plate:` section) ----
+        # The tool is carried by a Cartesian gantry, so it is modelled as a
+        # trajectory-tracking servo with the gantry's reflected inertia and a
+        # finite force budget, rather than as a free 2.4 g box on a soft
+        # spring. _plate_accel shapes the trapezoidal speed reference the servo
+        # follows; the gains are derived from moving_mass and bandwidth in
+        # build(), where the entity's dofs exist.
+        self._plate_moving_mass = float(self._plate_params.get("moving_mass", 0.5))
+        self._plate_accel       = float(self._plate_params.get("acceleration", 2.0))
+        self._plate_bandwidth   = float(self._plate_params.get("control_bandwidth_hz", 15.0))
+        self._plate_max_force   = float(self._plate_params.get("max_force", 30.0))
+        # Extra steps after the reference reaches the goal, letting the servo
+        # close its remaining tracking error before the sweep is judged.
+        self._sweep_settle_steps = int(self._sim_params.get("sweep_settle_steps", 12))
 
 
     def _log(self, message: str):
@@ -160,27 +170,27 @@ class SandboxManipulation:
     def _default_max_collision_pairs(self) -> int:
         """Contact-pair budget to preallocate when the config doesn't set one.
 
-        Genesis's own default is a flat 150, which is independent of how many
-        bodies are in the scene and is already marginal for ~50 particles: a
-        settled pile needs roughly one floor contact per particle plus a
-        neighbour contact for most of them, before the plate and walls are
-        counted. Overflow is *not* a clean failure — the broadphase sets an
-        error bit and stops adding pairs, so the remaining contacts are
-        silently dropped and the step is simulated with incomplete contact
-        physics (see ``_check_contact_budget`` for why that error bit never
-        surfaces here).
+        Genesis's own default is a flat 150, independent of how many bodies are
+        in the scene. Measured occupancy for a settled-then-pushed pile of 50
+        cubes of 5 mm is 51 broad-phase pairs and 211 contact points, i.e. a
+        required ``max_collision_pairs`` of only **14** — the pile is mostly
+        one floor contact per cube (4 points each under ``box_box_detection``)
+        plus a few neighbours. So the flat default is *not* the bottleneck it
+        looks like, and scaling it aggressively is actively harmful: the
+        dominant GPU allocation is the constraint Jacobian, which is
+        ``O(max_collision_pairs x contacts_per_pair x n_dofs x n_envs)``, so an
+        oversized cap directly costs parallel environments. Raw step time, by
+        contrast, is independent of it (measured flat across 150/800 at both
+        settings of ``box_box_detection``).
 
-        Raw step time is independent of this value — measured flat across
-        150/800 at both settings of ``box_box_detection`` — so overshooting
-        costs memory (the constraint Jacobian is
-        ``O(max_collision_pairs x contacts_per_pair x n_dofs x n_envs)``) and
-        the per-step ``collider.reset()`` in the settle/sweep loops, but not
-        the physics itself. Hence a scaled default with headroom rather than a
-        tight fit; set ``rigid_options.max_collision_pairs`` explicitly to
-        trade VRAM for envs at large ``n_particles``.
+        Hence a gentle scaling that keeps Genesis' 150 as a floor. Under-
+        estimating is caught loudly by ``_check_contact_budget`` rather than
+        silently corrupting contacts, which is the failure mode that matters:
+        on overflow the broadphase sets an error bit and stops adding pairs,
+        and that bit never surfaces here (see ``_check_contact_budget``).
         """
         n_particles = int(self._material_params.get("n_particles") or 0)
-        return max(150, 4 * n_particles + 64)
+        return max(150, n_particles)
 
     def _init_scene(self):
         v_x, _, v_z = self._box_params["vol"]
@@ -449,8 +459,50 @@ class SandboxManipulation:
         dofs_idx = [0, 1, 2, 3, 4, 5]
         self.plate.set_dofs_kp((0.8,) * 6, dofs_idx)
         self.plate.set_dofs_kv((1.0,) * 6, dofs_idx)
+        self._configure_plate_actuator()
 
         self._cache_particle_idx()
+
+    def _configure_plate_actuator(self) -> None:
+        """Model the pusher as a gantry axis rather than a free light box.
+
+        Three things, all on the translational dofs (rotation is hard-set every
+        step by the sweep/descent loops, so its gains are irrelevant):
+
+        armature
+            The plate geometry weighs ~2.4 g, which is far lighter than the
+            carriage that actually carries it, so granular reaction would move
+            it much more than on the real machine. ``set_dofs_armature`` adds
+            the drivetrain's reflected inertia to the mass-matrix diagonal —
+            the same matrix the constraint solver uses — so contacts see a
+            heavy axis while momentum exchange stays exact. This is the right
+            knob rather than a denser plate, which would also change the tool's
+            weight and its contact response.
+
+        gains
+            Chosen from the modelled mass and a target closed-loop bandwidth:
+            kp = m*w^2, kv = 2*z*m*w at z = 1 (critically damped). The default
+            15 Hz gives w ~ 94 rad/s against a 0.8 ms substep (w*h ~ 0.075),
+            comfortably stable, and a disturbance stiffness of kp ~ 4.4e3 N/m —
+            a couple of newtons of granular reaction displaces the tool well
+            under half a millimetre.
+
+        force range
+            Previously unbounded. With stiff gains a particle wedged against a
+            wall would draw an arbitrarily large force; a real stepper loses
+            steps instead. A finite budget makes a jam degrade gracefully.
+        """
+        translational = [0, 1, 2]
+        m = self._plate_moving_mass
+        omega = 2.0 * math.pi * self._plate_bandwidth
+        kp, kv = m * omega ** 2, 2.0 * m * omega
+
+        self.plate.set_dofs_armature((m,) * 3, translational)
+        self.plate.set_dofs_kp((kp,) * 3, translational)
+        self.plate.set_dofs_kv((kv,) * 3, translational)
+        self.plate.set_dofs_force_range(
+            (-self._plate_max_force,) * 3, (self._plate_max_force,) * 3,
+            translational)
 
     def _cache_particle_idx(self):
         links_idx = []
@@ -612,7 +664,16 @@ class SandboxManipulation:
                 positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
                 order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
                 order = order[order < n_active]  # only place the first n_active particles
-                candidate_batch = max(1024, min(4096, 64 * max(n_active, 1)))
+                # Candidate draws are split across more, smaller rounds rather
+                # than few large ones. The rejection test materializes an
+                # (active_envs, candidate_batch, n_placed, 2) intermediate, so
+                # a 4096-wide batch costs ~420 MB transiently at n_envs=32 /
+                # n_particles=200 — allocated and freed once per particle,
+                # which is enough to OOM alongside the solver. Rounds x batch
+                # is kept at the previous total, so placement success is
+                # unchanged; only the peak allocation drops (4x).
+                candidate_batch = max(256, min(1024, 64 * max(n_active, 1)))
+                candidate_rounds = 512
                 min_gap = 1e-3
 
                 # Vertical pitch between stacked layers — tall enough that the
@@ -641,7 +702,7 @@ class SandboxManipulation:
                         active = torch.ones(self._n_envs, dtype=torch.bool, device=gs.device)
                         span_xy = upper[particle_idx, :2] - lower[particle_idx, :2]
                         z_pos = layer_z + half_extents[particle_idx, 2]
-                        for _ in range(128):
+                        for _ in range(candidate_rounds):
                             active_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
                             if active_idx.numel() == 0:
                                 break
@@ -920,14 +981,24 @@ class SandboxManipulation:
             p_end,
             angle,
             debug=False,
+            on_step=None,
         ):
         """
-        Move plates with velocity control across all environments.
-        
+        Move plates along a trapezoidal speed profile across all environments.
+
         Args:
             p_start: Starting positions [n_envs, 3] or [3]
             p_end: Ending positions [n_envs, 3] or [3]
             angle: Rotation angle (scalar)
+            on_step: optional callback(step, p_ref, v_ref), invoked after each
+                simulation step of the sweep with the reference the servo was
+                tracking at that step. A no-op when None. Follows the same
+                hook convention as ``execute_action``'s ``on_phase`` (see
+                docs/UTILITIES.md) — it exists so diagnostics such as
+                ``Genesis/probe_plate_dynamics.py`` can measure the tool's
+                realized trajectory against its reference without duplicating
+                this control law, which is exactly the kind of drift that
+                makes a probe silently stop testing the thing it names.
         Returns:
             reached_goal : Mask of environments that reached the goal
         """
@@ -942,42 +1013,31 @@ class SandboxManipulation:
         # Horizontal movement
         self._horizontal_dof_fix[:, -1] = angle 
 
-        # Calculate velocity vector for each environment
-        delta = p_end - p_start  # [n_envs, 3]
-        dist = torch.linalg.norm(delta, axis=1, keepdim=True)  # [n_envs, 1]  
-        direction = delta / (dist + 1e-8)
-        v = direction * self._plate_params["speed"]  # [n_envs, 3]
+        delta = p_end - p_start                                   # [n_envs, 3]
+        dist = torch.linalg.norm(delta, axis=1)                   # [n_envs]
+        direction = delta / (dist.unsqueeze(1) + 1e-8)
 
-        # Set initial position, velocity and goal for all plates in all environments
+        prof = self._trapezoid_profile(dist)
+        dt = self._scene.dt
+        sweep_steps = max(
+            1, math.ceil(float(prof["duration"].max().item()) / dt)
+        ) + self._sweep_settle_steps
+
         self.plate.set_pos(p_start)
-        self.plate.control_dofs_position_velocity(p_end, v, dofs_idx_local=[0, 1, 2])
-        
-        max_sweep_distance = float(dist.max().item())
-        sweep_steps = max(1, math.ceil(max_sweep_distance / (self._plate_params["speed"] * self._scene.dt) * 1.7))
-        
-        reached_goal = torch.zeros(self._n_envs, dtype=torch.bool, device=gs.device)
-        best_dist = torch.full((self._n_envs,), torch.inf, device=gs.device)
-        frozen_pos = self.plate.get_pos()
-        
-        n_reached = 0
+
         for step in range(sweep_steps):
-            if n_reached > 0:
-                reached_envs_idx = reached_goal.nonzero().squeeze(dim=1)
-                self.plate.set_pos(
-                    frozen_pos[reached_goal],
-                    envs_idx=reached_envs_idx,
-                    zero_velocity=True,
-                )
-                # write only varying columns in-place; z/roll/pitch stay constant
-                self._freeze_dofs_buf[reached_envs_idx, 0] = frozen_pos[reached_envs_idx, 0]
-                self._freeze_dofs_buf[reached_envs_idx, 1] = frozen_pos[reached_envs_idx, 1]
-                self._freeze_dofs_buf[reached_envs_idx, 5] = angle[reached_envs_idx]
-                self.plate.set_dofs_position(
-                    self._freeze_dofs_buf[reached_envs_idx],
-                    dofs_idx_local=[0, 1, 2, 3, 4, 5],
-                    envs_idx=reached_envs_idx,
-                    zero_velocity=True,
-                )
+            # Feed the servo a *moving* reference: where the tool should be and
+            # how fast it should be going right now. Commanding the endpoint
+            # instead (the previous behaviour) turns the same PD into a
+            # position servo whose speed is proportional to distance remaining
+            # -- it settles at v = v_cruise + kp*remaining/kv, so it overshoots
+            # the commanded speed early in a sweep and undershoots near the
+            # goal, and never actually travels at plate.speed.
+            s, v_mag = self._trapezoid_at(prof, (step + 1) * dt)
+            p_ref = p_start + direction * s.unsqueeze(1)
+            v_ref = direction * v_mag.unsqueeze(1)
+            self.plate.control_dofs_position_velocity(
+                p_ref, v_ref, dofs_idx_local=[0, 1, 2])
 
             # zero_velocity=False: this call constrains z/roll/pitch/yaw only,
             # but RigidEntity.set_dofs_position defaults zero_velocity=True and
@@ -991,31 +1051,68 @@ class SandboxManipulation:
                 zero_velocity=False,
             )
             self._step_scene()
+            if on_step is not None:
+                on_step(step, p_ref, v_ref)
 
-            cur_pos = self.plate.get_pos()
-            cur_dist = torch.linalg.norm(cur_pos[:, :2] - p_end[:, :2], axis=1)
-            improved = cur_dist < best_dist
-            best_dist = torch.where(improved, cur_dist, best_dist)
-            newly_reached = (cur_dist < self._goal_threshold) & ~reached_goal
-            frozen_pos = torch.where(newly_reached[:, None], cur_pos, frozen_pos)
-            reached_goal |= newly_reached
-            
-            n_reached = int(reached_goal.sum().item())
-            if n_reached == self._n_envs:
-                if self._debug:
-                    print(f"All environments reached target at step {step + 1}")
-                break
-
-        final_pos = torch.where(reached_goal[:, None], frozen_pos, self.plate.get_pos())
+        # No per-step goal test: the reference itself ends at p_end and holds
+        # there, so envs that finish early simply stop, with no freeze
+        # bookkeeping. That also removes the two GPU syncs the old loop paid on
+        # every step (a .nonzero() and a .item()), which dominated the sweep's
+        # per-step cost at small n_envs.
+        final_pos = self.plate.get_pos()
+        final_err = torch.linalg.norm(final_pos[:, :2] - p_end[:, :2], axis=1)
+        reached_goal = final_err < self._goal_threshold
 
         if self._debug:
             print(
                 f" > Goal reached : {int(reached_goal.sum().item())}/{self._n_envs}; "
-                f" > Best distance range {float(best_dist.min().item()):.4f}-"
-                f"{float(best_dist.max().item()):.4f}m"
+                f" > Final tracking error {float(final_err.min().item()):.4f}-"
+                f"{float(final_err.max().item()):.4f}m over {sweep_steps} steps"
             )
 
         return reached_goal, final_pos
+
+    def _trapezoid_profile(self, dist: torch.Tensor) -> dict:
+        """Pre-compute a trapezoidal speed profile per env for a given travel.
+
+        Matches how the real gantry moves: accelerate at ``plate.acceleration``
+        to ``plate.speed``, cruise, then decelerate to rest exactly at the
+        target. Short moves that never reach cruise speed degenerate to a
+        triangular profile with peak sqrt(a*d), handled by the same expression.
+        """
+        v_max = float(self._plate_params["speed"])
+        a = self._plate_accel
+        v_peak = torch.clamp(torch.sqrt(a * dist.clamp(min=0.0)), max=v_max)
+        t_acc = v_peak / a
+        d_acc = 0.5 * a * t_acc ** 2
+        d_flat = torch.clamp(dist - 2.0 * d_acc, min=0.0)
+        t_flat = d_flat / v_peak.clamp(min=1e-9)
+        return {
+            "dist": dist, "a": a, "v_peak": v_peak,
+            "t_acc": t_acc, "d_acc": d_acc, "t_flat": t_flat, "d_flat": d_flat,
+            "duration": 2.0 * t_acc + t_flat,
+        }
+
+    def _trapezoid_at(self, prof: dict, t: float):
+        """Distance travelled and speed at time ``t``, per env."""
+        a, v_peak = prof["a"], prof["v_peak"]
+        t_acc, t_flat, d_acc, d_flat = (
+            prof["t_acc"], prof["t_flat"], prof["d_acc"], prof["d_flat"])
+        t_cruise_end = t_acc + t_flat
+        tc = torch.clamp(torch.full_like(v_peak, float(t)),
+                         max=prof["duration"])
+
+        t_dec = torch.clamp(tc - t_cruise_end, min=0.0)
+        s_acc = 0.5 * a * torch.minimum(tc, t_acc) ** 2
+        s_flat = v_peak * torch.minimum(torch.clamp(tc - t_acc, min=0.0), t_flat)
+        s_dec = v_peak * t_dec - 0.5 * a * t_dec ** 2
+
+        s = s_acc + s_flat + s_dec
+        v = torch.where(
+            tc <= t_acc, a * tc,
+            torch.where(tc <= t_cruise_end, v_peak, v_peak - a * t_dec),
+        )
+        return s, torch.clamp(v, min=0.0)
     
     def plate_position_translation(self, p_start, p_end, n_steps: int | None = None):
         """

@@ -142,9 +142,11 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--particles", nargs="+", type=int, default=[50, 70, 100, 150, 200])
     p.add_argument("--particle-size", type=float, default=0.005)
-    p.add_argument("--cap", type=int, default=6000,
-                   help="generous max_collision_pairs so nothing overflows "
-                        "while measuring")
+    p.add_argument("--cap", type=int, default=1500,
+                   help="max_collision_pairs to measure under — generous "
+                        "enough that nothing overflows, but the cap sizes the "
+                        "constraint Jacobian, so a very large value OOMs at "
+                        "high n_particles rather than measuring anything")
     p.add_argument("--n-envs", type=int, default=1)
     p.add_argument("--out", type=Path, default=None)
     p.add_argument("--cell", nargs=1, type=int, default=None, help=argparse.SUPPRESS)

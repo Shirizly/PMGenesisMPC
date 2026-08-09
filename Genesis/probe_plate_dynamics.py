@@ -50,23 +50,42 @@ def _config(n_particles: int, particle_size: float, density: float,
                            n_particles=n_particles, density=density,
                            friction=friction)
     cfg["box"]["friction"] = friction
-    cfg["rigid_options"]["max_collision_pairs"] = max_collision_pairs
+    if max_collision_pairs is not None:
+        cfg["rigid_options"]["max_collision_pairs"] = max_collision_pairs
     cfg.setdefault("data_collection", {})["record_transitions"] = False
     return cfg
 
 
-def _trace_sweep(sim: SandboxManipulation, p_start, p_stop, angle,
-                 zero_velocity: bool = False):
-    """Run one sweep, recording the plate's realized xy path each step.
+def _trace_production(sim: SandboxManipulation, p_start, p_stop, angle):
+    """Run the real ``plate_velocity_translation`` and record what it did.
 
-    Reimplements ``plate_velocity_translation``'s loop rather than calling it,
-    because the per-step plate pose is exactly what we need and the production
-    method only returns the endpoint.
+    Uses the production method via its ``on_step`` hook rather than a local
+    copy of the control law, so this probe cannot drift out of sync with the
+    code it is supposed to be measuring.
 
-    ``zero_velocity=True`` reproduces the pre-fix behaviour, where the per-step
-    ``set_dofs_position`` reset all six dofs' velocities and the plate
-    restarted from rest every step. Kept so the two actuator models can be
-    compared in one build rather than argued about.
+    Returns (realized_xy, reference_xy, speeds) per step.
+    """
+    realized, reference, speeds = [], [], []
+
+    def on_step(step, p_ref, v_ref):
+        realized.append(sim.plate.get_pos()[0, :2].clone())
+        reference.append(p_ref[0, :2].clone())
+        speeds.append(torch.linalg.norm(sim.plate.get_dofs_velocity()[0, :2]).clone())
+
+    sim.plate_velocity_translation(p_start, p_stop, angle, on_step=on_step)
+    return (torch.stack(realized).cpu().numpy(),
+            torch.stack(reference).cpu().numpy(),
+            torch.stack(speeds).cpu().numpy())
+
+
+def _trace_legacy(sim: SandboxManipulation, p_start, p_stop, angle,
+                  zero_velocity: bool = True):
+    """Reproduce the PREVIOUS control law for comparison.
+
+    The old sweep commanded the *endpoint* as the PD position target and let
+    the per-step ``set_dofs_position`` zero all six dofs' velocities, so the
+    plate restarted from rest every step. Kept here (and only here) so the two
+    actuator models can be compared within one build.
     """
     sim._horizontal_dof_fix[:, -1] = angle
     delta = p_stop - p_start
@@ -119,12 +138,19 @@ def parse_args():
     p.add_argument("--particle-size", type=float, default=0.005)
     p.add_argument("--density", type=float, default=1000.0)
     p.add_argument("--friction", type=float, default=0.3)
-    p.add_argument("--max-collision-pairs", type=int, default=2000)
+    p.add_argument("--max-collision-pairs", type=int, default=None,
+                   help="default: the wrapper's n_particles-scaled value. A "
+                        "large fixed cap is not free — at n=200 a cap of 2000 "
+                        "sizes the constraint Jacobian past this GPU's memory")
     p.add_argument("--armature", type=float, default=None,
                    help="if set, apply set_dofs_armature(<v>) to the plate — "
                         "the candidate fix for a tool that gets pushed around")
     p.add_argument("--kp", type=float, default=None, help="override plate kp")
     p.add_argument("--kv", type=float, default=None, help="override plate kv")
+    p.add_argument("--sweep-settle-steps", type=int, default=None,
+                   help="steps held at the goal after the reference ends; "
+                        "raising it separates servo settling from a genuine "
+                        "steady-state offset")
     return p.parse_args()
 
 
@@ -142,6 +168,8 @@ def main():
         sim.plate.set_dofs_kp((args.kp,) * 6, [0, 1, 2, 3, 4, 5])
     if args.kv is not None:
         sim.plate.set_dofs_kv((args.kv,) * 6, [0, 1, 2, 3, 4, 5])
+    if args.sweep_settle_steps is not None:
+        sim._sweep_settle_steps = args.sweep_settle_steps
 
     plate_mass = float(sim.plate.get_mass())
     p_size = args.particle_size
@@ -167,26 +195,49 @@ def main():
     total = float(np.linalg.norm((p_stop - p_start)[0, :2].cpu().numpy()))
     commanded_speed = sim._plate_params["speed"]
 
-    for label, zero_v in (("CURRENT (velocity retained)", False),
-                          ("LEGACY  (velocity zeroed every step)", True)):
+    for label in ("CURRENT (trapezoid reference, gantry actuator)",
+                  "LEGACY  (endpoint target, velocity zeroed every step)"):
+        is_current = label.startswith("CURRENT")
+
+        def run():
+            if is_current:
+                path, ref, spd = _trace_production(sim, p_start, p_stop, angle)
+                return path, spd, ref
+            # Restore the ORIGINAL actuator too, not just the original
+            # reference: soft gains, no reflected inertia, no force limit.
+            # Otherwise "legacy" would silently inherit the new gantry model
+            # and understate how much the old tool was pushed around.
+            dofs = [0, 1, 2]
+            sim.plate.set_dofs_armature((0.0,) * 3, dofs)
+            sim.plate.set_dofs_kp((0.8,) * 3, dofs)
+            sim.plate.set_dofs_kv((1.0,) * 3, dofs)
+            sim.plate.set_dofs_force_range((-1e9,) * 3, (1e9,) * 3, dofs)
+            try:
+                path, spd, _n = _trace_legacy(sim, p_start, p_stop, angle)
+            finally:
+                sim._configure_plate_actuator()
+            # legacy commanded a constant speed from t=0
+            return path, spd, _commanded_path(
+                p_start, p_stop, commanded_speed, sim._scene.dt, len(path))
+
         # free run: park every particle outside the box
         sim.set_n_active(0)
         sim.shuffle_particles()
         sim.update_material_state()
-        free_path, free_v, n_steps = _trace_sweep(
-            sim, p_start, p_stop, angle, zero_velocity=zero_v)
+        free_path, free_v, cmd = run()
 
         # loaded run: full pile
         sim.set_n_active(args.n_particles)
         sim.shuffle_particles()
         sim.update_material_state()
-        loaded_path, loaded_v, _ = _trace_sweep(
-            sim, p_start, p_stop, angle, zero_velocity=zero_v)
+        loaded_path, loaded_v, _ = run()
 
-        n = min(len(free_path), len(loaded_path))
-        cmd = _commanded_path(p_start, p_stop, commanded_speed, sim._scene.dt, n)
-        free_path, loaded_path = free_path[:n], loaded_path[:n]
+        n = min(len(free_path), len(loaded_path), len(cmd))
+        free_path, loaded_path, cmd = free_path[:n], loaded_path[:n], cmd[:n]
 
+        # tracking error is measured against the reference the servo was
+        # actually given, not against a constant-velocity ramp -- comparing a
+        # trapezoid against a ramp would report the acceleration phase as error
         track_err = np.linalg.norm(free_path - cmd, axis=1)
         react_err = np.linalg.norm(loaded_path - free_path, axis=1)
 
@@ -200,6 +251,14 @@ def main():
               f"mean {track_err.mean()*1000:7.2f} mm  max {track_err.max()*1000:7.2f} mm")
         print(f"  reaction displacement (loaded - free): "
               f"mean {react_err.mean()*1000:7.2f} mm  max {react_err.max()*1000:7.2f} mm")
+        goal = p_stop[0, :2].cpu().numpy()
+        fe_free = np.linalg.norm(free_path[-1] - goal)
+        fe_load = np.linalg.norm(loaded_path[-1] - goal)
+        thr = sim._goal_threshold
+        print(f"  final error vs goal    : free {fe_free*1000:6.2f} mm   "
+              f"loaded {fe_load*1000:6.2f} mm   "
+              f"(goal_threshold {thr*1000:.1f} mm -> reached_goal="
+              f"{bool(fe_load < thr)})")
         print(f"  distance travelled     : free "
               f"{np.linalg.norm(free_path[-1]-free_path[0])*1000:6.1f} mm   "
               f"loaded {np.linalg.norm(loaded_path[-1]-loaded_path[0])*1000:6.1f} mm   "

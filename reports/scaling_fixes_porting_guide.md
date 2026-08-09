@@ -123,7 +123,8 @@ Class key:
 **S** straight fix (no intended behavioural difference) ·
 **B** behaviour-changing fix (correct, but sim output changes) ·
 **A** additive (only affects previously-failing or previously-unused cases) ·
-**P** performance only · **T** tooling
+**P** performance only · 
+**T** tooling
 
 All anchors are in `Genesis/sandbox_manipulation_clean.py` unless stated.
 

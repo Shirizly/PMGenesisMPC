@@ -93,7 +93,8 @@ def _build_config(n_particles: int, particle_size: float,
 # --------------------------------------------------------------------------
 
 def run_cell(n_particles: int, n_envs: int, particle_size: float,
-             settle_steps: int, n_trials: int, max_collision_pairs: int) -> dict:
+             settle_steps: int, n_trials: int, max_collision_pairs: int,
+             vram_only: bool = False) -> dict:
     import torch
     import genesis as gs
 
@@ -109,7 +110,13 @@ def run_cell(n_particles: int, n_envs: int, particle_size: float,
     vram_baseline = vram_used_gib()
 
     cfg = _build_config(n_particles, particle_size, settle_steps)
-    cfg["rigid_options"]["max_collision_pairs"] = max_collision_pairs
+    # None -> let SandboxManipulation pick its shipped default, so the sweep
+    # measures the configuration that will actually be used to collect. An
+    # oversized cap is not free: the constraint Jacobian is
+    # O(mcp x contacts_per_pair x n_dofs x n_envs), so it directly reduces how
+    # many envs fit, without making the physics any more correct.
+    if max_collision_pairs is not None:
+        cfg["rigid_options"]["max_collision_pairs"] = max_collision_pairs
 
     out = {
         "n_particles": n_particles,
@@ -128,6 +135,16 @@ def run_cell(n_particles: int, n_envs: int, particle_size: float,
     out["vram_after_build_gib"] = vram_used_gib() - vram_baseline
 
     try:
+        if vram_only:
+            sim.shuffle_particles()
+            sim.update_material_state()
+            out["vram_peak_gib"] = vram_used_gib() - vram_baseline
+            out["max_collision_pairs_used"] = int(
+                sim._scene.rigid_solver.max_collision_pairs)
+            out["contact_usage"] = sim.contact_budget_usage()
+            out["ok"] = True
+            return out
+
         # ---- reset (full RSA re-placement) --------------------------------
         ts = []
         for _ in range(n_trials):
@@ -163,16 +180,30 @@ def run_cell(n_particles: int, n_envs: int, particle_size: float,
         out["t_restore"] = float(np.median(ts))
 
         # ---- action (lower / sweep / lift) --------------------------------
-        starts, stops, angles = sim.generate_action_samples(n_trials + 1)
+        # A FIXED crossing sweep, identical in every env and every cell.
+        # Randomly sampled actions are not comparable across cells: the sweep's
+        # step count follows the travel distance, so a cell that happened to
+        # draw long pushes looks slower for reasons that have nothing to do
+        # with n_particles or n_envs. (Before this was fixed, two draws in one
+        # cell differed by 5x.)
+        dev = sim._particle_state.device
+        half = 0.045
+        p_start = torch.tensor([[-half, 0.0, sim._operation_height]],
+                               device=dev).expand(n_envs, 3).contiguous()
+        p_stop = torch.tensor([[half, 0.0, sim._operation_height]],
+                              device=dev).expand(n_envs, 3).contiguous()
+        angle = torch.zeros(n_envs, device=dev)
+        out["sweep_distance_m"] = 2 * half
+
         sync(); t = time.perf_counter()
-        sim.execute_action(starts[:, 0, :], stops[:, 0, :], angles[:, 0])
+        sim.execute_action(p_start, p_stop, angle)
         sync()
         out["t_action_warmup"] = time.perf_counter() - t
 
         ts = []
-        for i in range(1, n_trials + 1):
+        for _ in range(n_trials):
             sync(); t = time.perf_counter()
-            sim.execute_action(starts[:, i, :], stops[:, i, :], angles[:, i])
+            sim.execute_action(p_start, p_stop, angle)
             sync(); ts.append(time.perf_counter() - t)
         out["t_action"] = float(np.median(ts))
 
@@ -210,9 +241,14 @@ def parse_args():
                    help="settle steps per transition (dataset default is 100)")
     p.add_argument("--n-trials", type=int, default=3)
     p.add_argument("--max-collision-pairs", type=int, default=None,
-                   help="default: auto (4 x n_particles, floor 150) — the "
-                        "wrapper's 150 default overflows well before 200 "
-                        "particles")
+                   help="default: whatever SandboxManipulation ships, so the "
+                        "sweep measures the real collection configuration")
+    p.add_argument("--vram-only", action="store_true",
+                   help="build + one settle, then report VRAM and stop. Finds "
+                        "the env ceiling in ~40 s/cell instead of minutes, "
+                        "which is the right trade when only the memory "
+                        "boundary has changed (per-step cost is independent "
+                        "of max_collision_pairs)")
     p.add_argument("--out", type=Path, default=None, help="write raw JSON here")
     p.add_argument("--cell", nargs=2, type=int, default=None,
                    help=argparse.SUPPRESS)   # internal single-cell mode
@@ -241,6 +277,22 @@ def print_tables(rows, particles, envs):
                     line += _fmt(r.get(key), spec)
             print(line)
 
+    if any("contact_usage" in r for r in rows):
+        print("\n### contact budget occupancy (peak used / cap)")
+        print(f"{'n_p':>5} {'n_envs':>7} {'mcp':>6} {'broad pairs':>14} "
+              f"{'contact points':>16} {'mcp needed':>11}")
+        for r in rows:
+            u = r.get("contact_usage")
+            if not u:
+                continue
+            need = max(math.ceil(u["broad_pairs"] / 8),
+                       math.ceil(u["contact_points"] / u["n_contacts_per_pair"]))
+            print(f"{r['n_particles']:>5} {r['n_envs']:>7} "
+                  f"{r.get('max_collision_pairs_used', '?'):>6} "
+                  f"{str(u['broad_pairs']) + '/' + str(u['broad_cap']):>14} "
+                  f"{str(u['contact_points']) + '/' + str(u['contact_cap']):>16} "
+                  f"{need:>11}")
+
     table("scene build (s)", "t_build", note=" — paid once per rebuild")
     table("reset: shuffle_particles (s)", "t_reset")
     table("restore: set_particle_state (s)", "t_restore", ".4f")
@@ -256,8 +308,11 @@ def print_tables(rows, particles, envs):
         line = f"{n:>13}"
         for e in envs:
             r = by.get((n, e))
-            if r is None or not r.get("ok"):
-                line += f"{'-' if r is None else 'FAIL':>9}"
+            # --vram-only cells are 'ok' but carry no timings, so read
+            # defensively rather than indexing — otherwise the whole summary
+            # (and the --out JSON written after it) is lost to a KeyError.
+            if r is None or not r.get("ok") or "t_reset" not in r:
+                line += f"{'-' if r is None or r.get('ok') else 'FAIL':>9}"
             else:
                 # a reset also needs a settle before the state is usable
                 cost = (r["t_reset"] + r["t_settle"]) / r["t_transition"]
@@ -280,9 +335,10 @@ def main():
 
     if args.cell is not None:
         n_particles, n_envs = args.cell
-        mcp = args.max_collision_pairs or max(150, 4 * n_particles)
+        mcp = args.max_collision_pairs
         result = run_cell(n_particles, n_envs, args.particle_size,
-                          args.settle_steps, args.n_trials, mcp)
+                          args.settle_steps, args.n_trials, mcp,
+                          vram_only=args.vram_only)
         print("###JSON###" + json.dumps(result))
         return
 
@@ -300,6 +356,8 @@ def main():
                    "--n-trials", str(args.n_trials)]
             if args.max_collision_pairs is not None:
                 cmd += ["--max-collision-pairs", str(args.max_collision_pairs)]
+            if args.vram_only:
+                cmd += ["--vram-only"]
             print(f"  n_envs={e} ...", end="", flush=True)
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   cwd=str(Path(__file__).resolve().parent.parent))
@@ -314,7 +372,14 @@ def main():
                 break
             r = json.loads(line[len("###JSON###"):])
             rows.append(r)
-            if r.get("ok"):
+            if r.get("ok") and args.vram_only:
+                u = r.get("contact_usage", {})
+                print(f" {r['vram_peak_gib']:.2f} GiB  (mcp="
+                      f"{r.get('max_collision_pairs_used')}, broad "
+                      f"{u.get('broad_pairs')}/{u.get('broad_cap')}, points "
+                      f"{u.get('contact_points')}/{u.get('contact_cap')})",
+                      flush=True)
+            elif r.get("ok"):
                 print(f" {r['t_transition']:.3f}s/transition, "
                       f"{r['transitions_per_sec']:.1f}/s, "
                       f"{r['vram_peak_gib']:.2f} GiB", flush=True)

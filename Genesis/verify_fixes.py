@@ -77,6 +77,8 @@ def main():
     ap.add_argument("--n-particles", type=int, default=200)
     ap.add_argument("--particle-size", type=float, default=0.005)
     ap.add_argument("--density", type=float, default=1000.0)
+    ap.add_argument("--n-envs", type=int, default=2,
+                    help=">1 also exercises set_particle_state's broadcast")
     ap.add_argument("--skip-timing-check", action="store_true",
                     help="skip check 1, which needs its own scene build")
     args = ap.parse_args()
@@ -88,14 +90,14 @@ def main():
         check_timing_defaults(s)
 
     print(f"\n--- main scene: n_particles={n}, size={s*1000:.1f} mm ---")
-    sim = SandboxManipulation(config=_config(n, s), n_envs=2, debug=False)
+    sim = SandboxManipulation(config=_config(n, s), n_envs=args.n_envs, debug=False)
     try:
         sim.build()
 
         # 2 -- contact budget default scales with the pile
         cap = sim._scene.rigid_solver.max_collision_pairs
         check("max_collision_pairs scales with n_particles",
-              cap >= 4 * n, f"cap={cap} (Genesis default would be 150)")
+              cap >= n, f"cap={cap} (Genesis default would be a flat 150)")
 
         # 3 -- plate friction is explicit, not Genesis' default 1.0
         pf = float(sim.plate.geoms[0].friction)
@@ -149,38 +151,59 @@ def main():
         # 7 -- the plate keeps momentum through a sweep
         dev = sim._particle_state.device
         p_start = torch.tensor([[-0.045, 0.0, sim._operation_height]],
-                               device=dev).expand(2, 3).contiguous()
+                               device=dev).expand(args.n_envs, 3).contiguous()
         p_stop = torch.tensor([[0.045, 0.0, sim._operation_height]],
-                              device=dev).expand(2, 3).contiguous()
-        angle = torch.zeros(2, device=dev)
+                              device=dev).expand(args.n_envs, 3).contiguous()
+        angle = torch.zeros(args.n_envs, device=dev)
 
-        sim._horizontal_dof_fix[:, -1] = 0.0
-        delta = p_stop - p_start
-        dist = torch.linalg.norm(delta, axis=1, keepdim=True)
-        v = delta / (dist + 1e-8) * sim._plate_params["speed"]
-        sim.plate.set_pos(p_start)
-        sim.plate.control_dofs_position_velocity(p_stop, v, dofs_idx_local=[0, 1, 2])
-        speeds = []
-        for _ in range(40):
-            sim.plate.set_dofs_position(sim._horizontal_dof_fix,
-                                        dofs_idx_local=sim._horizontal_dofs_local,
-                                        zero_velocity=False)
-            sim._step_scene()
+        # Drive the production sweep, not a local copy of the control law, and
+        # assert what actually matters: that the tool cruises at the commanded
+        # speed. The pre-fix endpoint-target law could not, by construction —
+        # it settles at v = v_cruise + kp*remaining/kv, so its speed depended
+        # on how far it still had to go.
+        speeds, refs = [], []
+
+        def on_step(step, p_ref, v_ref):
             speeds.append(float(torch.linalg.norm(
                 sim.plate.get_dofs_velocity()[0, :2])))
-        mean_speed = float(np.mean(speeds))
-        check("plate retains x/y velocity during sweep", mean_speed > 1e-3,
-              f"mean |v_xy| = {mean_speed*1000:.2f} mm/s "
-              f"(commanded {sim._plate_params['speed']*1000:.0f} mm/s; "
-              f"pre-fix this was 0 at the start of every step)")
+            refs.append(float(torch.linalg.norm(v_ref[0, :2])))
 
-        # 9 -- contact usage within budget
+        reached, final_pos = sim.plate_velocity_translation(
+            p_start, p_stop, angle, on_step=on_step)
+
+        commanded = float(sim._plate_params["speed"])
+        speeds, refs = np.array(speeds), np.array(refs)
+        cruising = refs > 0.99 * commanded          # steps where the reference cruises
+        cruise_speed = float(speeds[cruising].mean()) if cruising.any() else 0.0
+        check("plate cruises at the commanded speed",
+              abs(cruise_speed - commanded) < 0.15 * commanded,
+              f"cruise |v_xy| = {cruise_speed*1000:.1f} mm/s vs commanded "
+              f"{commanded*1000:.0f} mm/s ({cruise_speed/commanded:.2f}x)")
+
+        final_err = float(torch.linalg.norm(
+            (final_pos[:, :2] - p_stop[:, :2])[0]))
+        check("sweep lands on target within goal_threshold",
+              final_err < sim._goal_threshold,
+              f"final error {final_err*1000:.2f} mm vs threshold "
+              f"{sim._goal_threshold*1000:.1f} mm, reached_goal={bool(reached[0])}")
+
+        # 9 -- contact usage within budget.
+        # Two independent limits, both scaled from max_collision_pairs: broad-
+        # phase candidate pairs (cap mcp*8) and narrow-phase contact *points*
+        # (cap mcp*n_contacts_per_pair). They differ by a large factor, so each
+        # must be checked against its own cap.
         try:
-            st = sim._scene.rigid_solver.collider._collider_state
-            peak = int(torch.as_tensor(st.n_contacts.to_torch()).max())
-            check("contact usage within configured budget", peak < cap,
-                  f"peak {peak} pairs vs cap {cap} "
-                  f"(Genesis default of 150 would {'OVERFLOW' if peak >= 150 else 'hold'})")
+            u = sim.contact_budget_usage()
+            ok = (u["broad_pairs"] < u["broad_cap"]
+                  and u["contact_points"] < u["contact_cap"])
+            mcp_needed = max(math.ceil(u["broad_pairs"] / 8),
+                             math.ceil(u["contact_points"] / u["n_contacts_per_pair"]))
+            check("contact usage within configured budget", ok,
+                  f"broad {u['broad_pairs']}/{u['broad_cap']}, "
+                  f"points {u['contact_points']}/{u['contact_cap']} "
+                  f"-> needs max_collision_pairs >= {mcp_needed} "
+                  f"(Genesis default 150 would "
+                  f"{'OVERFLOW' if mcp_needed > 150 else 'hold'})")
         except Exception as e:
             check("contact usage within configured budget", False, f"unreadable: {e}")
 

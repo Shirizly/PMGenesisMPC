@@ -29,9 +29,21 @@ material:
 safety_margin : 0.005
 
 plate:
-  speed : 0.125 # m/s
+  speed : 0.125 # m/s                       # cruise speed of the trapezoid profile
   size : [0.04, 0.002, 0.01]
   friction : 0.3                            # must be set: unset -> Genesis default 1.0,
                                             # and contacts combine as max(mu_plate, mu_particle),
                                             # which would mask the sampled particle friction
+
+  # Actuator model. The real tool is carried by a 3D-printer-style Cartesian
+  # gantry: a heavy carriage driven by steppers with far more force than the
+  # push needs, tracking a trapezoidal velocity profile. So the quantity that
+  # resists granular reaction is the drivetrain's reflected inertia, not the
+  # plate's own weight -- moving_mass is applied via set_dofs_armature, which
+  # adds to the mass-matrix diagonal the solver already uses for contacts.
+  moving_mass : 0.5                         # kg, carriage + gripper reflected onto X/Y/Z
+  acceleration : 2.0                        # m/s^2, trapezoid ramp
+  control_bandwidth_hz : 15.0               # closed-loop bandwidth -> kp = m*w^2, kv = 2*m*w
+  max_force : 30.0                          # N per axis; a real stepper skips steps instead
+                                            # of applying unbounded force on a jam
 
