@@ -1,6 +1,6 @@
 # Architecture
 
-This is the repository map and extension guide. Data contracts and coordinate conventions are documented in `INTERFACES.md`. Utility ownership and transform guidance are documented in `UTILITIES.md`. The Genesis-as-model sampling MPC (CEM/MPPI ceiling baseline) has its own reference doc, `oracle_mpc_design.md`, since its design has enough moving parts (batched multi-env rollout, snapshot/restore state management, sampling optimizers) to warrant a dedicated write-up; this file only maps where its pieces live. The human-piloted variant of that same ceiling baseline (a person picks the action each step instead of CEM/MPPI, refined by a local grid search) has its own doc, `human_demo_design.md`, for the same reason.
+This is the repository map and extension guide. Data contracts and coordinate conventions are documented in `INTERFACES.md`. Utility ownership and transform guidance are documented in `UTILITIES.md`. The Genesis-as-model sampling MPC (CEM/MPPI ceiling baseline) has its own reference doc, `oracle_mpc_design.md`, since its design has enough moving parts (batched multi-env rollout, snapshot/restore state management, sampling optimizers) to warrant a dedicated write-up; this file only maps where its pieces live. The human-piloted variant of that same ceiling baseline (a person picks the action each step instead of CEM/MPPI, refined by a local grid search) has its own doc, `human_demo_design.md`, for the same reason. `scaling_to_200_objects.md` is the reference for the simulator's non-obvious settings — why the solver budget, contact-pair cap, settling criterion, particle spawn and pusher-plate actuator model hold their current values, and what large piles cost — and should be consulted before changing anything under `Genesis/configs/` or `SandboxManipulation`'s physics setup.
 
 > **Documentation is part of the change, not a follow-up.** Any change to a
 > major information flow, a module's responsibility, a default value, or an
@@ -175,6 +175,25 @@ Genesis/
                         reused by env/genesis_env.py,
                         simple_mpc/genesis_oracle.py, and this module's own
                         data_collection_clean.py, not oracle-specific.
+  state_library.py       StateLibrary / build_state_library — a bank of
+                        *settled* pile states, so a reset is a pose write
+                        rather than a re-settle (measured ~6 ms vs ~37 s at
+                        200 particles). Settles are amplified by the
+                        container's symmetry group (D4, x8, for a square
+                        tray), which is why a dozen settles yield a hundred
+                        distinct starts. Genesis-free (torch only),
+                        unit-tested in tests/test_state_library.py. Opt-in
+                        from data_collection_clean.py via --state-library.
+  placement_sampling.py  configuration-space sampling of tool touchdown
+                        poses that do not collide with the pile: occupancy
+                        grid -> rotated-rectangle dilation per yaw bin
+                        (Minkowski sum) -> free set, with a Euclidean
+                        distance transform for clearance-biased draws.
+                        Consumed by SandboxManipulation.generate_action_
+                        samples(placement_aware=True), which falls back to
+                        the blind draw per sample when the free set is empty.
+                        Genesis-free (torch/numpy/scipy), unit-tested in
+                        tests/test_placement_sampling.py.
   transition_buffer.py   TransitionBuffer — accumulates and saves the
                         before/after/action transitions push_and_record
                         records, in the same on-disk format
@@ -225,6 +244,23 @@ tests/
                                   5D branch, batching (Genesis-free)
   test_human_grid_search.py      build_action_grid shape/centering/bounds/
                                   broadcast (Genesis-free)
+  test_state_library.py          symmetry-expansion maths for the settled-state
+                                  bank: D4 group size, mirrored quaternions are
+                                  proper rotations, rigidity (Genesis-free)
+  test_placement_sampling.py     C-space free-placement maths: occupancy,
+                                  rotated-rectangle dilation, distance
+                                  transform, empty-free-set degradation
+                                  (Genesis-free)
+  scaling_investigation/         archived probes, raw measurements and the
+                                  settling diagnosis behind
+                                  docs/scaling_to_200_objects.md. NOT part of
+                                  the pytest suite — one-shot GPU measurement
+                                  scripts, run as
+                                  `python -m tests.scaling_investigation.<x>`.
+                                  verify_fixes.py and verify_new_features.py
+                                  there are the end-to-end assertions worth
+                                  re-running after touching
+                                  Genesis/sandbox_manipulation_clean.py.
 
 utils.py                shared root-level helpers (YAML I/O, action geometry,
                         point-cloud ops, goal-shape generation,

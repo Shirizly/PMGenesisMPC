@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Genesis/benchmark_scaling.py — measure how data-collection cost scales with
+tests/scaling_investigation/benchmark_scaling.py — measure how data-collection cost scales with
 particle count and parallel-environment count, to plan large-``n_particles``
 dataset collection.
 
@@ -31,13 +31,13 @@ Usage
 -----
 Run as a module from the REPO ROOT (see ``benchmark_n_envs.py`` for why)::
 
-    python -m Genesis.benchmark_scaling
-    python -m Genesis.benchmark_scaling --particles 50 100 200 --envs 1 2 4 8
-    python -m Genesis.benchmark_scaling --out results.json
+    python -m tests.scaling_investigation.benchmark_scaling
+    python -m tests.scaling_investigation.benchmark_scaling --particles 50 100 200 --envs 1 2 4 8
+    python -m tests.scaling_investigation.benchmark_scaling --out results.json
 
 Internal single-cell mode (invoked by the driver, not by hand)::
 
-    python -m Genesis.benchmark_scaling --cell N_PARTICLES N_ENVS
+    python -m tests.scaling_investigation.benchmark_scaling --cell N_PARTICLES N_ENVS
 """
 
 import argparse
@@ -50,6 +50,12 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+# This script lives outside Genesis/, so paths to the simulator's configs are
+# resolved explicitly rather than relative to this file.
+GENESIS_DIR = Path(__file__).resolve().parents[2] / "Genesis"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 DEFAULT_PARTICLES = [50, 70, 100, 150, 200]
 DEFAULT_ENVS = [1, 2, 4, 8, 16, 32]
@@ -72,8 +78,7 @@ def monolayer_capacity(box_side: float, particle_size: float,
 
 def _build_config(n_particles: int, particle_size: float,
                   settle_steps: int | None = None) -> dict:
-    base_dir = Path(__file__).parent
-    with open(base_dir / "configs" / "basic.yaml") as f:
+    with open(GENESIS_DIR / "configs" / "basic.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["material"]["shape"] = "cube"
     cfg["material"]["particle_size"] = particle_size
@@ -349,7 +354,7 @@ def main():
         print(f"\n=== n_particles={n} (size {args.particle_size*1000:.1f} mm, "
               f"~{cap}/layer, needs {layers} layer(s)) ===", flush=True)
         for e in args.envs:
-            cmd = [sys.executable, "-m", "Genesis.benchmark_scaling",
+            cmd = [sys.executable, "-m", "tests.scaling_investigation.benchmark_scaling",
                    "--cell", str(n), str(e),
                    "--particle-size", str(args.particle_size),
                    "--settle-steps", str(args.settle_steps),
@@ -360,7 +365,7 @@ def main():
                 cmd += ["--vram-only"]
             print(f"  n_envs={e} ...", end="", flush=True)
             proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  cwd=str(Path(__file__).resolve().parent.parent))
+                                  cwd=str(REPO_ROOT))
             line = next((l for l in proc.stdout.splitlines()
                          if l.startswith("###JSON###")), None)
             if line is None:

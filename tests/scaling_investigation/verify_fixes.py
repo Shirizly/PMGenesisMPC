@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Genesis/verify_fixes.py — end-to-end verification of the correctness fixes made
+tests/scaling_investigation/verify_fixes.py — end-to-end verification of the correctness fixes made
 to ``sandbox_manipulation_clean.py`` while scaling data collection to 200
 objects.
 
 Each check asserts an observable property of a live Genesis scene, so it fails
 loudly if a fix regresses. Run from the REPO ROOT::
 
-    python -m Genesis.verify_fixes
-    python -m Genesis.verify_fixes --n-particles 200 --particle-size 0.005
+    python -m tests.scaling_investigation.verify_fixes
+    python -m tests.scaling_investigation.verify_fixes --n-particles 200 --particle-size 0.005
 
 Checks
 ------
@@ -34,6 +34,12 @@ import yaml
 
 from Genesis.sandbox_manipulation_clean import SandboxManipulation
 
+# This script lives outside Genesis/, so paths to the simulator's configs are
+# resolved explicitly rather than relative to this file.
+GENESIS_DIR = Path(__file__).resolve().parents[2] / "Genesis"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 PASS, FAIL = "  PASS", "  FAIL"
 _results = []
 
@@ -45,7 +51,7 @@ def check(name, ok, detail=""):
 
 
 def _config(n_particles, particle_size, drop_timing=False):
-    with open(Path(__file__).parent / "configs" / "basic.yaml") as f:
+    with open(GENESIS_DIR / "configs" / "basic.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["material"].update(shape="cube", particle_size=particle_size,
                            n_particles=n_particles, density=1000.0, friction=0.3)
@@ -96,8 +102,9 @@ def main():
 
         # 2 -- contact budget default scales with the pile
         cap = sim._scene.rigid_solver.max_collision_pairs
-        check("max_collision_pairs scales with n_particles",
-              cap >= n, f"cap={cap} (Genesis default would be a flat 150)")
+        check("max_collision_pairs covers measured need",
+              cap >= max(150, n // 2),
+              f"cap={cap}; measured need is ~0.26*n = {int(0.26*n)}")
 
         # 3 -- plate friction is explicit, not Genesis' default 1.0
         pf = float(sim.plate.geoms[0].friction)
@@ -150,9 +157,14 @@ def main():
 
         # 7 -- the plate keeps momentum through a sweep
         dev = sim._particle_state.device
-        p_start = torch.tensor([[-0.045, 0.0, sim._operation_height]],
+        # x target must stay inside the tray: at yaw=0 the blade's long axis
+        # (0.04 m) lies along x, so its leading face sits 0.02 m ahead of the
+        # commanded centre against a wall at 0.064 m. Commanding 0.045 puts it
+        # 1 mm INTO the wall, and the plate then correctly stops ~1 mm short --
+        # which reads as a controller residual but is just an unreachable pose.
+        p_start = torch.tensor([[-0.030, 0.0, sim._operation_height]],
                                device=dev).expand(args.n_envs, 3).contiguous()
-        p_stop = torch.tensor([[0.045, 0.0, sim._operation_height]],
+        p_stop = torch.tensor([[0.030, 0.0, sim._operation_height]],
                               device=dev).expand(args.n_envs, 3).contiguous()
         angle = torch.zeros(args.n_envs, device=dev)
 

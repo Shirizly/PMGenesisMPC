@@ -78,7 +78,36 @@ class SandboxManipulation:
 
         # Configurable timing — read from simulation section so they can be
         # tuned without rebuilding the scene.
+        # settle_steps is a CAP, not a fixed count: update_material_state stops
+        # early once the pile is actually at rest. A fixed count is both
+        # wasteful for a small pile (which settles in a few tens of steps) and
+        # insufficient for a large one — a 200-cube pile is measurably still
+        # moving after the full 100 steps, and since each transition's s is the
+        # previous transition's s', an unsettled read propagates forward.
         self._settle_steps   = int(self._sim_params.get('settle_steps',   100))
+        self._settle_check_every = int(self._sim_params.get('settle_check_every', 10))
+        self._settle_vel_threshold = float(
+            self._sim_params.get('settle_velocity_threshold', 1e-3))     # m/s
+        # Angular rest threshold, derived from the linear one unless set
+        # explicitly. A bare rad/s number is not comparable to a m/s number:
+        # 0.1 rad/s on a 5 mm cube is a corner speed of 0.35 mm/s, i.e. three
+        # times STRICTER than the 1 mm/s linear threshold, so it silently
+        # became the binding criterion and kept piles "unsettled" long after
+        # their centres had stopped. Converting through the particle's lever
+        # arm makes both express the same surface speed.
+        _ang_thr = self._sim_params.get('settle_angular_velocity_threshold', None)
+        if _ang_thr is None:
+            _ps = self._material_params.get("particle_size") or 0.005
+            _ps = float(_ps) if isinstance(_ps, (int, float)) else float(max(_ps))
+            _lever = max(_ps * math.sqrt(3) / 2, 1e-4)     # half body diagonal
+            _ang_thr = self._settle_vel_threshold / _lever
+        self._settle_angvel_threshold = float(_ang_thr)  # rad/s
+        # Fraction of particles that must be below threshold. A plain max makes
+        # the test harder the more envs are batched (32 envs x 200 particles is
+        # 6400 chances for one straggler), so the settle never converges and
+        # always burns its cap. 0.995 tolerates ~1 straggler per 200-cube env.
+        self._settle_rest_quantile = float(
+            self._sim_params.get('settle_rest_quantile', 0.995))
         self._goal_threshold = 0.001
         
         self._debug = debug
@@ -139,8 +168,6 @@ class SandboxManipulation:
 
         self._particle_state = torch.empty((self._n_envs, self._material_params["n_particles"], 7), device=gs.device)
 
-        self._zero_n_envsx3 = torch.zeros((self._n_envs, 3), device=gs.device)
-
         # ---- actuator model (see configs/basic.yaml's `plate:` section) ----
         # The tool is carried by a Cartesian gantry, so it is modelled as a
         # trajectory-tracking servo with the gantry's reflected inertia and a
@@ -183,14 +210,20 @@ class SandboxManipulation:
         contrast, is independent of it (measured flat across 150/800 at both
         settings of ``box_box_detection``).
 
-        Hence a gentle scaling that keeps Genesis' 150 as a floor. Under-
-        estimating is caught loudly by ``_check_contact_budget`` rather than
-        silently corrupting contacts, which is the failure mode that matters:
-        on overflow the broadphase sets an error bit and stops adding pairs,
-        and that bit never surfaces here (see ``_check_contact_budget``).
+        Measured requirement is close to ``0.26 * n_particles`` (13 at n=50, 52
+        at n=200), so Genesis' flat 150 already carries ~2.8x headroom at 200
+        particles and only needs to grow past roughly n=570. Hence the gentle
+        ``n/2`` scaling below Genesis' floor. The difference is not academic:
+        at n_particles=200 a cap of 200 tops out at 16 parallel envs on an 8 GB
+        card, while 150 fits 32 — the cap alone doubles throughput.
+
+        Under-estimating is caught loudly by ``_check_contact_budget`` rather
+        than silently corrupting contacts, which is the failure mode that
+        matters: on overflow the broadphase sets an error bit and stops adding
+        pairs, and that bit never surfaces here (see ``_check_contact_budget``).
         """
         n_particles = int(self._material_params.get("n_particles") or 0)
-        return max(150, n_particles)
+        return max(150, n_particles // 2)
 
     def _init_scene(self):
         v_x, _, v_z = self._box_params["vol"]
@@ -836,24 +869,91 @@ class SandboxManipulation:
             Tensor of shape [n_envs, n_particles, 4] with (x, y, z, size)
         """
 
-        # Hold plate still
-        plate_pos = self.plate.get_pos()
-        self.plate.set_pos(plate_pos)
+        # Hold the plate still for the duration of the settle.
+        #
+        # The plate is lifted clear of the pile here, so the only force acting
+        # on it is its own 2.4 g weight — 0.0235 N against a translational
+        # kp of 4441 N/m, i.e. a steady-state sag of 5.3 um, about 0.1% of a
+        # 5 mm particle. The PD alone therefore pins it, and a per-step
+        # set_dofs_position is not just redundant but actively harmful:
+        # RigidSolver.set_dofs_position calls collider.reset() AND
+        # constraint_solver.reset() — discarding the constraint solver's warm
+        # start every step, with only 10 iterations to rebuild it — runs a
+        # whole-scene forward-kinematics pass, and clears _errno, which is why
+        # a contact-budget overflow could never surface. Setting the control
+        # target once is enough: ctrl_pos persists (it is only cleared by
+        # control_dofs_velocity, a mode switch) and the actuator reads it every
+        # substep.
+        frozen_plate_dofs = self.plate.get_dofs_position()
+        self.plate.zero_all_dofs_velocity()
         self.plate.control_dofs_position_velocity(
-            plate_pos,
-            self._zero_n_envsx3,
-            dofs_idx_local=[0, 1, 2]
+            frozen_plate_dofs,
+            torch.zeros_like(frozen_plate_dofs),
+            dofs_idx_local=[0, 1, 2, 3, 4, 5],
         )
 
-        frozen_plate_dofs = self.plate.get_dofs_position()
-        for _ in range(self._settle_steps):
-            self.plate.set_dofs_position(frozen_plate_dofs)
+        settled_at = None
+        for step in range(self._settle_steps):
             self._step_scene()
+            if (step + 1) % self._settle_check_every == 0 and self._pile_is_at_rest():
+                settled_at = step + 1
+                break
+
+        if settled_at is None and not getattr(self, "_settle_cap_warned", False):
+            lin_max, ang_max = self._pile_motion()
+            lin_q, ang_q = self._pile_motion(quantile=self._settle_rest_quantile)
+            self._settle_cap_warned = True
+            self._log(
+                f"WARNING: pile still moving after the full {self._settle_steps}-step "
+                f"settle. At the q={self._settle_rest_quantile} rest quantile: "
+                f"{lin_q*1000:.2f} mm/s linear, {ang_q:.2f} rad/s angular (thresholds "
+                f"{self._settle_vel_threshold*1000:.1f} / "
+                f"{self._settle_angvel_threshold:.1f}); worst single particle "
+                f"{lin_max*1000:.1f} mm/s, {ang_max:.1f} rad/s. The recorded state is "
+                f"mid-motion, and because each transition's s comes from the previous "
+                f"s', that error propagates. Raise simulation.settle_steps, or relax "
+                f"simulation.settle_rest_quantile if the tail is a few stragglers."
+            )
+        elif self._debug and settled_at is not None:
+            self._log(f"settled after {settled_at}/{self._settle_steps} steps")
 
         self._check_contact_budget()
 
         self._particle_state[:, :, 0:3] = self._get_particle_positions()
         self._particle_state[:, :, 3:] = self._get_particle_quats()
+
+    def _pile_motion(self, quantile: float | None = None) -> tuple[float, float]:
+        """(linear m/s, angular rad/s) particle speed, peak or at a quantile.
+
+        Linear and angular are kept separate rather than reduced to one number:
+        a free joint's dofs are [x, y, z, roll, pitch, yaw], so both live in the
+        same tensor but carry different units, and a single max over all six
+        conflates metres per second with radians per second — which reads as an
+        alarming velocity when it is really a mildly spinning cube.
+
+        ``quantile=None`` gives the peak. A quantile is what the rest test
+        actually wants: the peak is taken over *every particle in every env*, so
+        its strictness scales with n_envs. At 32 envs x 200 particles a single
+        straggler anywhere holds up all 6400, and the settle then always runs to
+        its cap — which is exactly what happened before this was quantile-based.
+        """
+        if self._particle_dofs_idx.numel() == 0:
+            return 0.0, 0.0
+        vel = self._scene.rigid_solver.get_dofs_velocity(
+            dofs_idx=self._particle_dofs_idx).reshape(self._n_envs, -1, 6)
+        n_active = getattr(self, "_n_active", vel.shape[1])
+        vel = vel[:, :n_active]
+        lin = vel[..., :3].norm(dim=-1).flatten()
+        ang = vel[..., 3:].norm(dim=-1).flatten()
+        if quantile is None:
+            return float(lin.max()), float(ang.max())
+        q = torch.tensor(quantile, device=lin.device, dtype=lin.dtype)
+        return float(torch.quantile(lin, q)), float(torch.quantile(ang, q))
+
+    def _pile_is_at_rest(self) -> bool:
+        lin, ang = self._pile_motion(quantile=self._settle_rest_quantile)
+        return (lin < self._settle_vel_threshold
+                and ang < self._settle_angvel_threshold)
 
     def _check_contact_budget(self) -> None:
         """Warn (once) if the pile is close to exhausting the contact budget.
@@ -995,7 +1095,7 @@ class SandboxManipulation:
                 tracking at that step. A no-op when None. Follows the same
                 hook convention as ``execute_action``'s ``on_phase`` (see
                 docs/UTILITIES.md) — it exists so diagnostics such as
-                ``Genesis/probe_plate_dynamics.py`` can measure the tool's
+                ``tests/scaling_investigation/probe_plate_dynamics.py`` can measure the tool's
                 realized trajectory against its reference without duplicating
                 this control law, which is exactly the kind of drift that
                 makes a probe silently stop testing the thing it names.
@@ -1140,10 +1240,31 @@ class SandboxManipulation:
     def generate_action_samples(
             self,
             n_samples: int,
+            placement_aware: bool = False,
+            placement_resolution: float = 0.001,
+            placement_angles: int = 16,
+            placement_clearance: float = 0.0,
+            placement_clearance_bias: float = 0.0,
         ):
         """
         Generate random action samples for all environments.
-        
+
+        Args:
+            n_samples: samples per environment.
+            placement_aware: choose ``p_start`` (and its yaw) from the tool's
+                *free configuration space* instead of blindly from the box
+                interior, so the plate does not descend into a particle. See
+                Genesis/placement_sampling.py. Falls back to the blind draw,
+                per sample, wherever no collision-free placement exists —
+                which is the expected outcome once the pile covers enough of
+                the tray, and is why this is a refinement rather than a
+                replacement.
+            placement_resolution: occupancy/C-space grid cell size, metres.
+            placement_angles: number of yaw bins the free set is computed for.
+            placement_clearance: extra margin added around the tool footprint.
+            placement_clearance_bias: >0 biases the draw toward placements with
+                more room around them (weight = clearance ** bias).
+
         Returns:
             Tuple of (action_starts, action_stops, angles) each of shape [n_envs * n_samples, 3/1]
         """
@@ -1174,7 +1295,76 @@ class SandboxManipulation:
         action_stops = action_stops.reshape(self._n_envs, n_samples, 3)
         angles = angles.reshape(self._n_envs, n_samples)
 
+        if placement_aware:
+            action_starts, angles = self._apply_placement_aware_starts(
+                action_starts, angles, n_samples,
+                resolution=placement_resolution,
+                n_angles=placement_angles,
+                clearance=placement_clearance,
+                clearance_bias=placement_clearance_bias,
+            )
+
         return action_starts, action_stops, angles
+
+    def _apply_placement_aware_starts(self, action_starts, angles, n_samples, *,
+                                      resolution, n_angles, clearance,
+                                      clearance_bias):
+        """Replace blindly-drawn touchdown poses with collision-free ones.
+
+        Only ``p_start`` and the yaw are overridden — the sweep target is left
+        alone, since the tool is *supposed* to run into particles once it is
+        down; what must be avoided is materializing inside one on the way down.
+
+        Any (env, sample) for which the free set is empty keeps its blind draw,
+        so a fully-covered tray degrades to the previous behaviour instead of
+        failing.
+        """
+        from .placement_sampling import (build_occupancy, clearance_map,
+                                         free_placements, sample_free_placements)
+
+        tool_length, tool_width, _ = self._plate_params["size"]
+        sizes = self._sampled_params.get("particle_sizes", None)
+        if sizes is None:
+            sizes = [p.morph.size if hasattr(p.morph, "size")
+                     else (p.morph.radius * 2,) * 3 for p in self.material]
+        half_xy = torch.as_tensor(sizes, dtype=torch.float32,
+                                  device=gs.device)[:, :2] * 0.5
+        # a cube free to take any yaw sweeps out sqrt(2) of its side
+        is_cube = torch.tensor([hasattr(p.morph, "size") for p in self.material],
+                               dtype=torch.float32, device=gs.device)
+        half_xy = half_xy * (1.0 + (math.sqrt(2) - 1.0) * is_cube).unsqueeze(1)
+
+        try:
+            occ, meta = build_occupancy(
+                self._particle_state[:, :, 0:3], half_xy,
+                (self._box_params["vol"][0], self._box_params["vol"][1]),
+                resolution, active=getattr(self, "_n_active", None))
+            yaw_bins = (-torch.pi / 2) + torch.arange(
+                n_angles, device=gs.device, dtype=torch.float32) * (torch.pi / n_angles)
+            free = free_placements(occ, meta, yaw_bins, tool_length, tool_width,
+                                   clearance=clearance)
+            dist = clearance_map(occ, meta) if clearance_bias > 0 else None
+            xy, yaw, ok = sample_free_placements(
+                free, meta, yaw_bins, n_samples, clearance=dist,
+                clearance_bias=clearance_bias)
+        except Exception as e:                      # never block collection
+            self._log(f"placement-aware sampling unavailable ({e}); "
+                      f"falling back to blind sampling")
+            return action_starts, angles
+
+        n_free = int(ok.sum().item())
+        if n_free == 0:
+            self._log("placement-aware sampling found no collision-free tool "
+                      "placement; falling back to blind sampling")
+            return action_starts, angles
+        if self._debug and n_free < ok.numel():
+            self._log(f"placement-aware: {n_free}/{ok.numel()} samples placed "
+                      f"in free space, rest fell back to blind")
+
+        starts = action_starts.clone()
+        starts[..., 0] = torch.where(ok, xy[..., 0], starts[..., 0])
+        starts[..., 1] = torch.where(ok, xy[..., 1], starts[..., 1])
+        return starts, torch.where(ok, yaw, angles)
 
     def execute_action(
             self,
@@ -1357,6 +1547,7 @@ class SandboxManipulation:
             self,
             n_samples: int = 200,
             path : str | Path = "training",
+            placement_aware: bool = False,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -1365,6 +1556,10 @@ class SandboxManipulation:
         Args:
             n_samples: Number of samples to collect per environment
             path: Output path for data
+            placement_aware: draw each touchdown pose from the tool's free
+                configuration space rather than blindly (see
+                generate_action_samples). Falls back per sample where no
+                collision-free placement exists.
         """
         max_samples = n_samples * self._n_envs
 
@@ -1372,6 +1567,7 @@ class SandboxManipulation:
             "n_envs": self._n_envs,
             "samples_per_env": n_samples,
             "goal_threshold": self._goal_threshold,
+            "placement_aware": bool(placement_aware),
         })
 
         # Allocate once or reuse if same size
@@ -1384,10 +1580,14 @@ class SandboxManipulation:
         for buf in self._collection_buffers.values():
             buf.zero_()
         
-        # Generate random action samples per env
-        action_starts, action_stops, angles = self.generate_action_samples(n_samples)
-
+        # Settle first: placement-aware sampling reads self._particle_state, so
+        # the occupancy it builds must reflect the pile the tool will actually
+        # descend into, not the pre-settle spawn layout.
         self.update_material_state()
+
+        # Generate random action samples per env
+        action_starts, action_stops, angles = self.generate_action_samples(
+            n_samples, placement_aware=placement_aware)
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 

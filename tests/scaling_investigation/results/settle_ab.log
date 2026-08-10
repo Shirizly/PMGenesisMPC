@@ -1,0 +1,39 @@
+      baseline (hold_by_control=False, iterations=10) ... 190.9 ms/step, settled_at=520, 382 s
+       pd_hold (hold_by_control=True, iterations=10) ... 143.8 ms/step, settled_at=480, 288 s
+   more_solver (hold_by_control=False, iterations=50) ... 203.4 ms/step, settled_at=450, 407 s
+          both (hold_by_control=True, iterations=50) ... 154.1 ms/step, settled_at=450, 308 s
+
+### q99.5 particle speed vs simulated time (mm/s linear)
+     variant     0.5s     1.0s     2.0s     4.0s     6.0s     8.0s
+    baseline    27.84     2.04     1.80     2.00     4.08     0.90
+     pd_hold     6.48     1.60     0.59     0.12     0.03     0.21
+ more_solver     6.99     1.59     0.56     0.19     0.88     0.68
+        both    85.70     1.59     0.31     0.03     0.03     0.11
+
+### q99.5 angular (rad/s)
+     variant     0.5s     1.0s     2.0s     4.0s     6.0s     8.0s
+    baseline    9.506    0.634    0.525    0.595    1.132    0.263
+     pd_hold    2.439    0.242    0.386    0.007    0.004    0.013
+ more_solver    2.226    0.256    0.177    0.019    0.148    0.140
+        both   24.781    0.247    0.044    0.001    0.001    0.010
+
+### worst single particle at the end (the sustained-motion outliers)
+     variant   max linear mm/s   max angular rad/s
+    baseline              25.1                7.22
+     pd_hold               1.0                0.28
+ more_solver               0.8                0.25
+        both               0.2                0.07
+
+### cost and convergence
+     variant   ms/step   settled at   total s
+    baseline     190.9          520       382  (1.00x baseline)
+     pd_hold     143.8          480       288  (0.75x baseline)
+ more_solver     203.4          450       407  (1.07x baseline)
+        both     154.1          450       308  (0.81x baseline)
+
+### verdict
+       pd_hold: floor 0.21 vs 0.90 mm/s (0.24x) — LOWER, mechanism implicated
+   more_solver: floor 0.68 vs 0.90 mm/s (0.75x) — no clear improvement
+          both: floor 0.11 vs 0.90 mm/s (0.12x) — LOWER, mechanism implicated
+
+raw -> /home/alon/Code/pile_manipulation/outputs/scaling_benchmark/settle_ab.json

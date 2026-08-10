@@ -1,6 +1,6 @@
 # Porting guide — the "scale to 200 objects" change set
 
-Companion to `reports/scaling_to_200_objects.md`, which explains *why* each
+Companion to `docs/scaling_to_200_objects.md`, which explains *why* each
 change was made and shows the measurements. This document is the **what and
 where**, organised so you can take the changes one at a time into another fork.
 
@@ -26,7 +26,7 @@ Everything was developed against **Genesis 0.4.5**, torch 2.11.0+cu130.
 
 | path | what it is | must you port it? |
 |---|---|---|
-| **`reports/scaling_to_200_objects.md`** | the measurement report | no — documentation only |
+| **`docs/scaling_to_200_objects.md`** | the measurement report | no — documentation only |
 | **`reports/scaling_fixes_porting_guide.md`** | this file | no |
 | `outputs/scaling_benchmark/` | raw benchmark JSON/logs | no — and it is `.gitignore`d (`outputs/`) |
 

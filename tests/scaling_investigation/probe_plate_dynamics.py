@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Genesis/probe_plate_dynamics.py — measure how faithfully the pusher plate
+tests/scaling_investigation/probe_plate_dynamics.py — measure how faithfully the pusher plate
 tracks its commanded trajectory, and how much the pile perturbs it.
 
 Motivation
@@ -27,9 +27,9 @@ Usage
 -----
 From the REPO ROOT (see ``benchmark_n_envs.py`` for why)::
 
-    python -m Genesis.probe_plate_dynamics
-    python -m Genesis.probe_plate_dynamics --n-particles 200 --particle-size 0.005
-    python -m Genesis.probe_plate_dynamics --density 5000 --armature 0.1
+    python -m tests.scaling_investigation.probe_plate_dynamics
+    python -m tests.scaling_investigation.probe_plate_dynamics --n-particles 200 --particle-size 0.005
+    python -m tests.scaling_investigation.probe_plate_dynamics --density 5000 --armature 0.1
 """
 
 import argparse
@@ -41,10 +41,16 @@ import yaml
 
 from Genesis.sandbox_manipulation_clean import SandboxManipulation
 
+# This script lives outside Genesis/, so paths to the simulator's configs are
+# resolved explicitly rather than relative to this file.
+GENESIS_DIR = Path(__file__).resolve().parents[2] / "Genesis"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 
 def _config(n_particles: int, particle_size: float, density: float,
             friction: float, max_collision_pairs: int) -> dict:
-    with open(Path(__file__).parent / "configs" / "basic.yaml") as f:
+    with open(GENESIS_DIR / "configs" / "basic.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["material"].update(shape="cube", particle_size=particle_size,
                            n_particles=n_particles, density=density,
@@ -188,8 +194,10 @@ def main():
 
     # A single fixed, fully-crossing sweep so free and loaded are comparable.
     dev = sim._particle_state.device
-    p_start = torch.tensor([[-0.045, 0.0, sim._operation_height]], device=dev)
-    p_stop = torch.tensor([[0.045, 0.0, sim._operation_height]], device=dev)
+    # see verify_fixes.py: at yaw=0 the blade reaches 0.02 m beyond the
+    # commanded centre, and the wall is at 0.064 m, so 0.045 is unreachable
+    p_start = torch.tensor([[-0.030, 0.0, sim._operation_height]], device=dev)
+    p_stop = torch.tensor([[0.030, 0.0, sim._operation_height]], device=dev)
     angle = torch.zeros(1, device=dev)
 
     total = float(np.linalg.norm((p_stop - p_start)[0, :2].cpu().numpy()))

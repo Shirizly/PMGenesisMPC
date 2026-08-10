@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Genesis/probe_contact_counts.py — measure how many collision pairs a settled
+tests/scaling_investigation/probe_contact_counts.py — measure how many collision pairs a settled
 pile and an active push actually generate, so ``max_collision_pairs`` can be
 set from data instead of guessed.
 
@@ -30,8 +30,8 @@ Usage
 -----
 From the REPO ROOT::
 
-    python -m Genesis.probe_contact_counts
-    python -m Genesis.probe_contact_counts --particles 50 100 200 --cap 6000
+    python -m tests.scaling_investigation.probe_contact_counts
+    python -m tests.scaling_investigation.probe_contact_counts --particles 50 100 200 --cap 6000
 """
 
 import argparse
@@ -44,9 +44,15 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+# This script lives outside Genesis/, so paths to the simulator's configs are
+# resolved explicitly rather than relative to this file.
+GENESIS_DIR = Path(__file__).resolve().parents[2] / "Genesis"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 
 def _config(n_particles, particle_size, cap):
-    with open(Path(__file__).parent / "configs" / "basic.yaml") as f:
+    with open(GENESIS_DIR / "configs" / "basic.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["material"].update(shape="cube", particle_size=particle_size,
                            n_particles=n_particles, density=1000.0, friction=0.3)
@@ -165,11 +171,11 @@ def main():
     for n in args.particles:
         print(f"  n_particles={n:>4} ...", end="", flush=True)
         proc = subprocess.run(
-            [sys.executable, "-m", "Genesis.probe_contact_counts", "--cell", str(n),
+            [sys.executable, "-m", "tests.scaling_investigation.probe_contact_counts", "--cell", str(n),
              "--particle-size", str(args.particle_size), "--cap", str(args.cap),
              "--n-envs", str(args.n_envs)],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent.parent))
+            cwd=str(REPO_ROOT))
         line = next((l for l in proc.stdout.splitlines()
                      if l.startswith("###JSON###")), None)
         if line is None:

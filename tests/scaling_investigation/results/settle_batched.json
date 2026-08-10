@@ -1,0 +1,44 @@
+[
+  {
+    "n_particles": 150,
+    "cap": 3000,
+    "n_envs": 32,
+    "steps_to_rest": [
+      570
+    ],
+    "seconds": [
+      544.6169751459965
+    ],
+    "final_linear": [
+      0.029335685074329376
+    ],
+    "final_angular": [
+      8.619418144226074
+    ],
+    "converged": [
+      true
+    ],
+    "ok": true
+  },
+  {
+    "n_particles": 200,
+    "cap": 3000,
+    "n_envs": 32,
+    "steps_to_rest": [
+      1460
+    ],
+    "seconds": [
+      2041.3644941309904
+    ],
+    "final_linear": [
+      0.048026762902736664
+    ],
+    "final_angular": [
+      18.648588180541992
+    ],
+    "converged": [
+      true
+    ],
+    "ok": true
+  }
+]

@@ -1,0 +1,9 @@
+  n_particles= 150 ... steps to rest [570]  (converged)
+  n_particles= 200 ... steps to rest [1460]  (converged)
+
+### steps needed to reach rest (production default is 100)
+  n_p   median    max   seconds             vs 100
+  150      570    570    544.62   NEEDS 570 (5.7x)
+  200     1460   1460   2041.36 NEEDS 1460 (14.6x)
+
+raw -> /home/alon/Code/pile_manipulation/outputs/scaling_benchmark/settle_batched.json

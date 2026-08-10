@@ -1,0 +1,11 @@
+  n_particles=  50 ... steps to rest [40, 40, 40]  (converged)
+  n_particles= 100 ... steps to rest [40, 40, 40]  (converged)
+  n_particles= 200 ... steps to rest [1020, 640, 1260]  (converged)
+
+### steps needed to reach rest (production default is 100)
+  n_p   median    max   seconds             vs 100
+   50       40     40      1.97                 ok
+  100       40     40      3.74                 ok
+  200     1020   1260    196.75 NEEDS 1260 (12.6x)
+
+raw -> /home/alon/Code/pile_manipulation/outputs/scaling_benchmark/settle_convergence.json

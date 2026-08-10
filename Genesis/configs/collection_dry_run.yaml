@@ -1,0 +1,67 @@
+# Collection plan for the n_objects sweep — consumed by Genesis/run_collection.py
+#
+#   python -m Genesis.run_collection --plan configs/collection_dry_run.yaml
+#
+# This is a DRY RUN: one transition sequence per n_objects, to prove the whole
+# pipeline works end to end before committing to a long run. Raise
+# `samples_per_env` and `n_batches` to scale up — nothing else needs to change.
+
+base_config: basic.yaml          # simulator settings (dt, solver, box, plate)
+output_root: data/dry_run
+
+material:
+  shape: cube
+  # 5 mm is the only size in the historical sweep at which every n_objects up
+  # to 200 fits the 128 mm tray (147 per layer, 3 layers max => 441 capacity).
+  # Larger particles are fine for small n but cannot reach 200 without a bigger
+  # tray -- see docs/scaling_to_200_objects.md section 4.
+  particle_size: 0.005
+
+  # Constant physical parameters: n_objects is the only thing that varies.
+  # Note the effective tool-contact friction is max(particle_friction,
+  # plate.friction) because Genesis combines contact friction with max(); with
+  # both set to 0.3 here that is unambiguously 0.3.
+  particle_friction: 0.3
+  particle_density: 1000.0
+  box_friction: 0.3
+
+plan:
+  n_objects: [20, 50, 70, 100, 150, 200]
+
+  # Parallel envs per n_objects. These are the MEASURED OOM ceilings on an
+  # 8 GB RTX 4070 with the shipped max_collision_pairs default
+  # (tests/scaling_investigation/benchmark_scaling.py --vram-only). They are ceilings, not
+  # recommendations: n=50 at 128 envs used 7.22 GiB of 7.62 GiB total, so any
+  # other GPU consumer (a browser, an LLM server) will push it over. Use
+  # --env-scale 0.5 for headroom on a shared card.
+  n_envs:
+    20: 128        # not measured directly; n=50 fits 128, and 20 is strictly smaller
+    50: 128
+    70: 64
+    100: 64
+    150: 32
+    200: 32
+
+  # Transitions per environment per batch, and number of batches.
+  # samples_per_env=1, n_batches=1 => exactly one transition per env per
+  # n_objects, which is the dry run. Total transitions per n_objects is
+  # n_envs * samples_per_env * n_batches.
+  samples_per_env: 1
+  n_batches: 1
+
+  # Settle N piles once per build and expand them by the tray's symmetry group
+  # (x8 for a square tray), then reset by restoring instead of re-settling.
+  # At 200 particles a correct settle is ~197 s, so this is the difference
+  # between a feasible run and an infeasible one once n_batches grows.
+  #
+  # 3 for the dry run, deliberately: each settle also yields one state PER ENV,
+  # so at 32 envs this is already 3 x 32 x 8 = 768 distinct starts, enough to
+  # prove the mechanism while keeping the dry run short. Raise to 10-20 for the
+  # real run (10 x 32 x 8 = 2560 starts) once the dry run has reported what a
+  # settle actually costs at each pile size.
+  state_library_settles: 3
+
+  # Draw tool touchdown poses from the free configuration space so the plate
+  # does not descend into a particle. Falls back per sample when the tray is
+  # too full for any collision-free placement.
+  placement_aware: true

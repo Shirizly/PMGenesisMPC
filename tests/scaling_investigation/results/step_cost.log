@@ -1,0 +1,5 @@
+  n_p=  50 envs=  1 mcp=  200 box_box=1 ... raw    31.0 ms  sweep    52.8 ms  overhead   21.8 ms  vram 0.25 GiB
+  n_p=  50 envs=  1 mcp=  200 box_box=0 ... raw    45.6 ms  sweep    58.1 ms  overhead   12.5 ms  vram 0.25 GiB
+  n_p=  50 envs=  1 mcp=  800 box_box=1 ... raw    30.8 ms  sweep    96.9 ms  overhead   66.0 ms  vram 0.43 GiB
+  n_p=  50 envs=  1 mcp=  800 box_box=0 ... raw    45.8 ms  sweep    69.1 ms  overhead   23.3 ms  vram 0.31 GiB
+  n_p=  50 envs=  1 mcp= 2000 box_box=1 ...

@@ -8,7 +8,14 @@ import yaml
 import numpy as np
 from pathlib import Path
 
-from sandbox_manipulation_clean import SandboxManipulation
+# Relative imports: sandbox_manipulation_clean does `from .utilities.materials
+# import *`, which only resolves inside the package. Run from the REPO ROOT as
+#     python -m Genesis.data_collection_clean
+# exactly as tests/scaling_investigation/benchmark_scaling.py and the probes are run. (Importing
+# these as top-level modules fails, and so does running this file as a script
+# from inside Genesis/ — the two failure modes are symmetric and neither works.)
+from .sandbox_manipulation_clean import SandboxManipulation
+from .state_library import build_state_library, StateLibrary, STATE_LIBRARY_FILENAME
 
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
@@ -77,6 +84,46 @@ def parse_args():
     parser.add_argument("--output-root", default="data/corl")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--viewer-type", choices=["observer", "bird", "leveled"], default=None)
+    parser.add_argument(
+        "--state-library", type=int, default=0, metavar="N_SETTLES",
+        help="settle N fresh random piles once per build, expand them by the "
+             "container's symmetries (x8 for a square tray), save them beside "
+             "the data as '" + STATE_LIBRARY_FILENAME + "', and reset from that "
+             "bank instead of re-settling for every material batch. 10-20 is a "
+             "good range. 0 (default) keeps the current behaviour: a fresh "
+             "shuffle_particles() + settle per batch.")
+    parser.add_argument(
+        "--state-library-damping", type=float, default=0.0,
+        help="temporary viscous damping on the particles WHILE the state "
+             "library settles, removed afterwards. A numerical convergence "
+             "aid, not a physical model (real air drag is ~3e-5 of a 5 mm "
+             "cube's weight). Safe here because this settle only needs to "
+             "reach some valid resting configuration; it is deliberately not "
+             "applied to the post-push settle, where it would bias the "
+             "recorded s' toward smaller displacements.")
+    parser.add_argument(
+        "--no-state-library-augment", action="store_true",
+        help="with --state-library, store only the settled states themselves, "
+             "without the symmetry-expanded variants")
+    parser.add_argument(
+        "--placement-aware", action="store_true",
+        help="draw each tool touchdown pose from its free configuration space "
+             "so the plate does not descend into a particle; falls back to the "
+             "blind draw per sample when no free placement exists")
+    parser.add_argument(
+        "--constant-params", action="store_true",
+        help="use one fixed material setting instead of sweeping the "
+             "friction x density x box-friction grid (100 batches). Values "
+             "come from --particle-friction / --particle-density / "
+             "--box-friction, and per-particle jitter is disabled.")
+    parser.add_argument("--particle-friction", type=float, default=0.3)
+    parser.add_argument("--particle-density", type=float, default=1000.0)
+    parser.add_argument("--box-friction", type=float, default=0.3)
+    parser.add_argument(
+        "--n-batches", type=int, default=None,
+        help="limit how many material batches are collected (default: all). "
+             "With --constant-params this is simply how many times the pile is "
+             "reset and swept, i.e. the number of transition sequences.")
     return parser.parse_args()
 
 
@@ -100,16 +147,41 @@ def main():
         # Iterate number of particles
         for n_p in args.num_particles:
             config["material"]["n_particles"] = n_p
-            env_settings = build_property_env_settings(n_p, rng)
+            if args.constant_params:
+                # One fixed setting, no per-particle jitter: the physical
+                # parameters are held constant so that n_objects is the only
+                # thing varying across the run.
+                env_settings = [{
+                    "particle_friction": float(args.particle_friction),
+                    "sampled_particle_friction": None,
+                    "particle_density": float(args.particle_density),
+                    "sampled_particle_density": None,
+                    "box_friction": float(args.box_friction),
+                }]
+            else:
+                env_settings = build_property_env_settings(n_p, rng)
+            if args.n_batches is not None:
+                env_settings = (env_settings * args.n_batches)[:args.n_batches]
             
             # Iterate particle sizes
-            sizes = (
-                [{"base": args.particle_sizes[0], "sampled": args.particle_sizes}]
-                if args.particle_sizes != PARTICLE_SIZES
-                else build_particle_size_settings(n_p, rng)
-            )
-            if n_p == 50: 
-                sizes = sizes[:-1] # Exclude largest size for n=50
+            if args.particle_sizes == PARTICLE_SIZES:
+                sizes = build_particle_size_settings(n_p, rng)
+            elif len(args.particle_sizes) == 1:
+                # A single size means "every particle is this size" — pass it
+                # as a scalar. Passing it as a 1-element per-particle list
+                # instead makes random_sequential_addition reject it, since
+                # that list must be either length 2 (a range) or length
+                # n_particles.
+                sizes = [{"base": args.particle_sizes[0], "sampled": None}]
+            else:
+                sizes = [{"base": args.particle_sizes[0],
+                          "sampled": args.particle_sizes}]
+            # NOTE: the old `if n_p == 50: sizes = sizes[:-1]` hack lived here.
+            # It was patching one cell of a general problem — most (n, size)
+            # combinations simply cannot be placed in a 128 mm tray (see
+            # docs/scaling_to_200_objects.md §4). Placement now falls back to
+            # stacked layers, and genuinely infeasible combinations raise and
+            # are skipped with a clear message rather than being special-cased.
             for size_setting in sizes:
                 config["material"]["particle_size"] = size_setting["base"]
                 config.setdefault("data_collection", {})["sampled"] = {}
@@ -129,22 +201,51 @@ def main():
 
                 sm.build()
 
+                out_path = (
+                    f"{args.output_root}/{shape}/n{n_p}/size{size_setting['base']}"
+                )
+
+                # Optional: pay for a handful of settles once, then reset from
+                # the resulting bank for every material batch. A reset via
+                # set_particle_state needs no settle at all (the stored state
+                # is already at rest), which is 50-80x cheaper than
+                # shuffle_particles + settle -- and the symmetry expansion means
+                # far more distinct starts than settles paid for.
+                state_library = None
+                if args.state_library > 0:
+                    print(f"\n=== building state library "
+                          f"({args.state_library} settles) ===", flush=True)
+                    try:
+                        state_library = build_state_library(
+                            sm, n_settles=args.state_library,
+                            augment=not args.no_state_library_augment,
+                            damping=args.state_library_damping)
+                        saved = state_library.save(
+                            Path(__file__).parent / out_path)
+                        print(f"  saved {len(state_library)} states -> {saved}",
+                              flush=True)
+                    except RuntimeError as e:
+                        print(f"  could not build state library ({e}); "
+                              f"falling back to per-batch shuffling")
+                        state_library = None
+
                 for property_idx, property_setting in enumerate(env_settings):
                     print(f"\n--- material batch {property_idx + 1}/{len(env_settings)}", flush=True)
-                    
+
                     sm.set_material_properties(property_setting)
                     try:
-                        sm.shuffle_particles()
+                        if state_library is not None:
+                            state_library.apply(sm, rng)
+                        else:
+                            sm.shuffle_particles()
                         sm.collect_data_samples(
                             n_samples=args.samples_per_env,
-                            path=(
-                                f"{args.output_root}/"
-                                f"{shape}/n{n_p}/size{size_setting['base']}"
-                            ),
+                            path=out_path,
+                            placement_aware=args.placement_aware,
                         )
                     except RuntimeError as e:
                         print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")
-                    
+
 
                 sm.destroy()
 

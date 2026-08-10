@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Genesis/probe_step_cost.py — isolate what a single simulation step costs, and
+tests/scaling_investigation/probe_step_cost.py — isolate what a single simulation step costs, and
 which knobs drive it, at large particle counts.
 
 Why this exists
@@ -29,8 +29,8 @@ Usage
 -----
 From the REPO ROOT::
 
-    python -m Genesis.probe_step_cost
-    python -m Genesis.probe_step_cost --particles 200 --mcp 200 800 2000 --envs 1
+    python -m tests.scaling_investigation.probe_step_cost
+    python -m tests.scaling_investigation.probe_step_cost --particles 200 --mcp 200 800 2000 --envs 1
 """
 
 import argparse
@@ -44,9 +44,15 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+# This script lives outside Genesis/, so paths to the simulator's configs are
+# resolved explicitly rather than relative to this file.
+GENESIS_DIR = Path(__file__).resolve().parents[2] / "Genesis"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 
 def _config(n_particles, particle_size, mcp, box_box):
-    with open(Path(__file__).parent / "configs" / "basic.yaml") as f:
+    with open(GENESIS_DIR / "configs" / "basic.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["material"].update(shape="cube", particle_size=particle_size,
                            n_particles=n_particles, density=1000.0, friction=0.3)
@@ -157,11 +163,11 @@ def main():
         print(f"  n_p={n_p:>4} envs={n_e:>3} mcp={mcp:>5} box_box={bb} ...",
               end="", flush=True)
         proc = subprocess.run(
-            [sys.executable, "-m", "Genesis.probe_step_cost", "--cell",
+            [sys.executable, "-m", "tests.scaling_investigation.probe_step_cost", "--cell",
              str(n_p), str(n_e), str(mcp), str(bb), str(args.n_steps),
              "--particle-size", str(args.particle_size)],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent.parent))
+            cwd=str(REPO_ROOT))
         line = next((l for l in proc.stdout.splitlines()
                      if l.startswith("###JSON###")), None)
         if line is None:

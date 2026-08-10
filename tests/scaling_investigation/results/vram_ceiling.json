@@ -1,0 +1,719 @@
+[
+  {
+    "n_particles": 50,
+    "n_envs": 1,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 13.001085803000024,
+    "vram_after_build_gib": 0.19049072265625,
+    "vram_peak_gib": 0.19244384765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 2,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 11.907688537998183,
+    "vram_after_build_gib": 0.25299072265625,
+    "vram_peak_gib": 0.25689697265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 4,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 13.185455646002083,
+    "vram_after_build_gib": 0.34674072265625,
+    "vram_peak_gib": 0.37017822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 8,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.71091755800444,
+    "vram_after_build_gib": 0.53424072265625,
+    "vram_peak_gib": 0.55767822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 16,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.003284925995104,
+    "vram_after_build_gib": 0.90924072265625,
+    "vram_peak_gib": 0.93463134765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 32,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.021275917999446,
+    "vram_after_build_gib": 1.62799072265625,
+    "vram_peak_gib": 1.67095947265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 64,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 23.877068549001706,
+    "vram_after_build_gib": 3.12799072265625,
+    "vram_peak_gib": 3.33111572265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 50,
+    "n_envs": 128,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 26.34354653099581,
+    "vram_after_build_gib": 6.09674072265625,
+    "vram_peak_gib": 7.21588134765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 50,
+      "broad_cap": 1200,
+      "contact_points": 200,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 1,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 23.45688658799918,
+    "vram_after_build_gib": 0.22174072265625,
+    "vram_peak_gib": 0.22369384765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 70,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 2,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.461237146999338,
+    "vram_after_build_gib": 0.28424072265625,
+    "vram_peak_gib": 0.30767822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 70,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 4,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.419190596003318,
+    "vram_after_build_gib": 0.44049072265625,
+    "vram_peak_gib": 0.46392822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 70,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 8,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.5353466979941,
+    "vram_after_build_gib": 0.69049072265625,
+    "vram_peak_gib": 0.71588134765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 72,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 16,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.54517349100206,
+    "vram_after_build_gib": 1.22174072265625,
+    "vram_peak_gib": 1.26470947265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 70,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 32,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 24.625201261995244,
+    "vram_after_build_gib": 2.25299072265625,
+    "vram_peak_gib": 2.31744384765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 70,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 64,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 25.36278255099751,
+    "vram_after_build_gib": 4.31549072265625,
+    "vram_peak_gib": 4.83111572265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 70,
+      "broad_cap": 1200,
+      "contact_points": 280,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 70,
+    "n_envs": 128,
+    "ok": false,
+    "error": "[E 08/09/26 11:43:00.040 351426] [cuda_driver.h:operator()@93] CUDA Error CUDA_ERROR_OUT_OF_MEMORY: out of memory while calling malloc_async_impl (cuMemAllocAsync)"
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 1,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 25.718310322001344,
+    "vram_after_build_gib": 0.28424072265625,
+    "vram_peak_gib": 0.28814697265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 2,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 26.084160118,
+    "vram_after_build_gib": 0.37799072265625,
+    "vram_peak_gib": 0.40142822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 4,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 26.285188151996408,
+    "vram_after_build_gib": 0.56549072265625,
+    "vram_peak_gib": 0.58892822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 8,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 26.440759352000896,
+    "vram_after_build_gib": 0.94049072265625,
+    "vram_peak_gib": 0.96392822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 16,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 26.50878816000477,
+    "vram_after_build_gib": 1.69049072265625,
+    "vram_peak_gib": 1.73345947265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 32,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 27.11980997199862,
+    "vram_after_build_gib": 3.19049072265625,
+    "vram_peak_gib": 3.39361572265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 64,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 28.49075236600038,
+    "vram_after_build_gib": 6.15924072265625,
+    "vram_peak_gib": 7.27838134765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 100,
+      "broad_cap": 1200,
+      "contact_points": 400,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 100,
+    "n_envs": 128,
+    "ok": false,
+    "error": "[E 08/09/26 11:48:04.149 353701] [cuda_driver.h:operator()@93] CUDA Error CUDA_ERROR_OUT_OF_MEMORY: out of memory while calling malloc_async_impl (cuMemAllocAsync)"
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 1,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 30.69921941299981,
+    "vram_after_build_gib": 0.37799072265625,
+    "vram_peak_gib": 0.40142822265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 193,
+      "broad_cap": 1200,
+      "contact_points": 614,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 2,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 30.920913050998934,
+    "vram_after_build_gib": 0.50299072265625,
+    "vram_peak_gib": 0.52838134765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 195,
+      "broad_cap": 1200,
+      "contact_points": 609,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 4,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 30.469164870002714,
+    "vram_after_build_gib": 0.78424072265625,
+    "vram_peak_gib": 0.80963134765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 201,
+      "broad_cap": 1200,
+      "contact_points": 610,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 8,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 30.93264372599515,
+    "vram_after_build_gib": 1.37799072265625,
+    "vram_peak_gib": 1.42291259765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 206,
+      "broad_cap": 1200,
+      "contact_points": 613,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 16,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 31.5593049819945,
+    "vram_after_build_gib": 2.50299072265625,
+    "vram_peak_gib": 2.56549072265625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 205,
+      "broad_cap": 1200,
+      "contact_points": 616,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 32,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 33.14776932899986,
+    "vram_after_build_gib": 4.81549072265625,
+    "vram_peak_gib": 5.26275634765625,
+    "max_collision_pairs_used": 150,
+    "contact_usage": {
+      "broad_pairs": 208,
+      "broad_cap": 1200,
+      "contact_points": 618,
+      "contact_cap": 2400,
+      "max_collision_pairs": 150,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 150,
+    "n_envs": 64,
+    "ok": false,
+    "error": "[E 08/09/26 11:58:19.317 357585] [cuda_driver.h:operator()@93] CUDA Error CUDA_ERROR_OUT_OF_MEMORY: out of memory while calling malloc_async_impl (cuMemAllocAsync)"
+  },
+  {
+    "n_particles": 200,
+    "n_envs": 1,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 37.027248047998,
+    "vram_after_build_gib": 0.50299072265625,
+    "vram_peak_gib": 0.52838134765625,
+    "max_collision_pairs_used": 200,
+    "contact_usage": {
+      "broad_pairs": 283,
+      "broad_cap": 1600,
+      "contact_points": 807,
+      "contact_cap": 3200,
+      "max_collision_pairs": 200,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 200,
+    "n_envs": 2,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 37.21682484300254,
+    "vram_after_build_gib": 0.75299072265625,
+    "vram_peak_gib": 0.77838134765625,
+    "max_collision_pairs_used": 200,
+    "contact_usage": {
+      "broad_pairs": 289,
+      "broad_cap": 1600,
+      "contact_points": 818,
+      "contact_cap": 3200,
+      "max_collision_pairs": 200,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 200,
+    "n_envs": 4,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 40.35514839700045,
+    "vram_after_build_gib": 1.28424072265625,
+    "vram_peak_gib": 1.30963134765625,
+    "max_collision_pairs_used": 200,
+    "contact_usage": {
+      "broad_pairs": 305,
+      "broad_cap": 1600,
+      "contact_points": 825,
+      "contact_cap": 3200,
+      "max_collision_pairs": 200,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 200,
+    "n_envs": 8,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 38.69920411399653,
+    "vram_after_build_gib": 2.28424072265625,
+    "vram_peak_gib": 2.32916259765625,
+    "max_collision_pairs_used": 200,
+    "contact_usage": {
+      "broad_pairs": 306,
+      "broad_cap": 1600,
+      "contact_points": 828,
+      "contact_cap": 3200,
+      "max_collision_pairs": 200,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 200,
+    "n_envs": 16,
+    "particle_size": 0.005,
+    "settle_steps": 100,
+    "max_collision_pairs": null,
+    "vram_baseline_gib": 0.1478271484375,
+    "t_build": 39.86361699600093,
+    "vram_after_build_gib": 4.31549072265625,
+    "vram_peak_gib": 4.37994384765625,
+    "max_collision_pairs_used": 200,
+    "contact_usage": {
+      "broad_pairs": 310,
+      "broad_cap": 1600,
+      "contact_points": 832,
+      "contact_cap": 3200,
+      "max_collision_pairs": 200,
+      "n_contacts_per_pair": 16
+    },
+    "ok": true
+  },
+  {
+    "n_particles": 200,
+    "n_envs": 32,
+    "ok": false,
+    "error": "[E 08/09/26 12:09:08.259 361752] [cuda_driver.h:operator()@93] CUDA Error CUDA_ERROR_OUT_OF_MEMORY: out of memory while calling malloc_async_impl (cuMemAllocAsync)"
+  }
+]
