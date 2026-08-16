@@ -143,6 +143,10 @@ class StateLibrary:
                 f"states must be (n_states, n_particles, 7), got {tuple(states.shape)}")
         self.states = states
         self.meta = meta or {}
+        # Draw order for without-replacement sampling; see next_index.
+        self._order: list[int] | None = None
+        self._cursor = 0
+        self.refills = 0
 
     def __len__(self) -> int:
         return int(self.states.shape[0])
@@ -152,19 +156,69 @@ class StateLibrary:
         return int(self.states.shape[1])
 
     def sample_index(self, rng=None) -> int:
+        """Uniform draw WITH replacement. Prefer ``next_index``."""
         if rng is None:
             return int(torch.randint(len(self), (1,)).item())
         return int(rng.integers(len(self)))
 
+    @property
+    def draws_remaining(self) -> int:
+        """States left in the current pass before the library is exhausted."""
+        if self._order is None:
+            return len(self)
+        return max(0, len(self._order) - self._cursor)
+
+    def _refill(self, rng=None) -> None:
+        n = len(self)
+        if rng is None:
+            self._order = torch.randperm(n).tolist()
+        else:
+            self._order = [int(i) for i in rng.permutation(n)]
+        self._cursor = 0
+
+    def next_index(self, rng=None) -> int:
+        """Draw an index WITHOUT replacement, reshuffling once exhausted.
+
+        With-replacement sampling repeats states long before it has used the
+        ones it has — over a run of K draws from a library of N, the expected
+        number of distinct states used is only ``N(1 - (1-1/N)^K)``. Walking a
+        shuffled permutation instead guarantees every state is used once before
+        any is used twice, which is free and strictly better use of what the
+        library cost to settle.
+
+        Exhausting the library is not an error — it reshuffles and starts a new
+        pass — but it *is* the signal that the run is long enough to warrant a
+        bigger one, so the first wrap is reported.
+        """
+        if self._order is None:
+            self._refill(rng)
+        elif self._cursor >= len(self._order):
+            self._refill(rng)
+            self.refills += 1
+            if self.refills == 1:
+                print(f"  state library exhausted after {len(self)} distinct "
+                      f"states; reshuffling and reusing. Raise --state-library "
+                      f"to collect more distinct initial states.", flush=True)
+        index = self._order[self._cursor]
+        self._cursor += 1
+        return int(index)
+
     def apply(self, sim, rng=None, index: int | None = None) -> int:
-        """Reset ``sim`` to one library state. Returns the index used.
+        """Reset every env to ONE library state. Returns the index used.
 
         No settle is required afterwards: the stored state is already at rest.
         This is the whole point of the library — it replaces
         ``shuffle_particles() + update_material_state()``.
+
+        All environments deliberately share the same initial state. The
+        alternative (``apply_per_env``) buys per-env diversity, but a batch of
+        identical piles is cheaper to simulate, and within a batch the sampled
+        action parameters already vary the dynamics substantially — so the
+        variance given up is small next to the throughput gained. Diversity
+        across *batches* is preserved by drawing without replacement.
         """
         if index is None:
-            index = self.sample_index(rng)
+            index = self.next_index(rng)
         state = self.states[index].to(sim._particle_state.device)
         if state.shape[0] != len(sim.material):
             raise ValueError(
@@ -172,6 +226,33 @@ class StateLibrary:
                 f"{len(sim.material)}; libraries are specific to a build")
         sim.set_particle_state(state[None, :, 0:3], state[None, :, 3:7])
         return index
+
+    def apply_per_env(self, sim, rng=None, indices=None) -> list[int]:
+        """Reset each environment to a *different* library state.
+
+        NOT the default for collection — see ``apply`` for why a shared initial
+        state is preferred there. This exists for cases that specifically need
+        env-to-env diversity within a single batch, and for measuring what that
+        diversity costs.
+
+        Returns the indices used, one per env.
+        """
+        n_envs = int(sim._n_envs)
+        if indices is None:
+            indices = [self.next_index(rng) for _ in range(n_envs)]
+        indices = list(indices)
+        if len(indices) != n_envs:
+            raise ValueError(f"need {n_envs} indices, got {len(indices)}")
+        states = self.states[indices].to(sim._particle_state.device)
+        if states.shape[1] != len(sim.material):
+            raise ValueError(
+                f"library holds {states.shape[1]} particles but the scene has "
+                f"{len(sim.material)}; libraries are specific to a build")
+        # set_particle_state broadcasts dim 0, so an (n_envs, n, .) batch is
+        # written per env unchanged.
+        sim.set_particle_state(states[..., 0:3].contiguous(),
+                               states[..., 3:7].contiguous())
+        return indices
 
     def save(self, out_dir: str | Path, filename: str = STATE_LIBRARY_FILENAME) -> Path:
         out_dir = Path(out_dir)
@@ -184,6 +265,76 @@ class StateLibrary:
     def load(cls, path: str | Path) -> "StateLibrary":
         blob = torch.load(Path(path), weights_only=False)
         return cls(blob["states"], blob.get("meta", {}))
+
+
+def default_library_path(root: str | Path, shape: str, n_particles: int,
+                         particle_size: float,
+                         filename: str = STATE_LIBRARY_FILENAME) -> Path:
+    """Where a library for this (shape, count, size) is written and looked for.
+
+    Mirrors the dataset layout ``data_collection_clean.py`` writes to, so a
+    library saved during a collection run is found again without being told
+    where it is.
+    """
+    return Path(root) / shape / f"n{n_particles}" / f"size{particle_size}" / filename
+
+
+def load_or_build_state_library(sim, path: str | Path, n_settles: int = 15, *,
+                                augment: bool = True, damping: float = 0.0,
+                                reuse: bool = True, verbose: bool = True
+                                ) -> StateLibrary:
+    """Load a compatible library from ``path``, or settle a fresh one and save it.
+
+    Settling is by far the most expensive thing in a run — a fresh two-layer
+    respawn of 200 particles takes on the order of 1500 steps to come to rest,
+    and the library pays that once per settle. Reusing a library that already
+    exists therefore removes essentially all of the startup cost, which matters
+    just as much for a diagnostic probe as for a collection run.
+
+    Compatibility is checked rather than assumed: a library is specific to the
+    particle count (the state tensor's shape is `(n_states, n_particles, 7)`),
+    and to the size and shape those particles were settled at. A mismatch
+    rebuilds rather than silently restoring poses that belong to a different
+    scene.
+    """
+    path = Path(path)
+    if reuse and path.exists():
+        try:
+            lib = StateLibrary.load(path)
+        except Exception as e:
+            if verbose:
+                print(f"  state library at {path} unreadable ({e}); rebuilding",
+                      flush=True)
+        else:
+            problems = []
+            if lib.n_particles != len(sim.material):
+                problems.append(f"holds {lib.n_particles} particles, scene has "
+                                f"{len(sim.material)}")
+            want_size = sim._material_params.get("particle_size")
+            got_size = lib.meta.get("particle_size")
+            if got_size is not None and want_size is not None and got_size != want_size:
+                problems.append(f"settled at particle_size {got_size}, scene is "
+                                f"{want_size}")
+            want_shape = sim._material_params.get("shape")
+            got_shape = lib.meta.get("shape")
+            if got_shape is not None and want_shape is not None and got_shape != want_shape:
+                problems.append(f"settled with shape {got_shape}, scene is {want_shape}")
+            if problems:
+                if verbose:
+                    print(f"  state library at {path} does not match this scene "
+                          f"({'; '.join(problems)}); rebuilding", flush=True)
+            else:
+                if verbose:
+                    print(f"  reusing {len(lib)} settled states from {path}",
+                          flush=True)
+                return lib
+
+    lib = build_state_library(sim, n_settles=n_settles, augment=augment,
+                              damping=damping, verbose=verbose)
+    lib.save(path.parent, path.name)
+    if verbose:
+        print(f"  saved {len(lib)} states -> {path}", flush=True)
+    return lib
 
 
 def build_state_library(sim, n_settles: int = 15, *, augment: bool = True,

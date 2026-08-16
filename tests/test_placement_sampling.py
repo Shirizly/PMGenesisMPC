@@ -81,6 +81,36 @@ def test_wall_margin_excludes_poses_that_poke_through():
     assert not free[0, 0, :, meta["W"] - margin_cells:].any()
 
 
+def test_wall_margin_widens_the_excluded_border():
+    """placement-aware sampling must keep the same distance from the wall that
+    the blind sampler does, or it quietly shifts touchdowns toward the rim."""
+    occ, meta = _occupancy([[10.0, 10.0]])          # empty tray
+    angles = torch.tensor([0.0])
+    margin = 0.02
+
+    bare = free_placements(occ, meta, angles, TOOL_L, TOOL_W)
+    with_margin = free_placements(occ, meta, angles, TOOL_L, TOOL_W,
+                                  wall_margin=margin)
+
+    cells = int(math.ceil((TOOL_L / 2 + margin) / RES))
+    assert not with_margin[0, 0, :, :cells].any()
+    assert not with_margin[0, 0, :, meta["W"] - cells:].any()
+    # and it is strictly stricter, not merely different
+    assert with_margin[0, 0].sum() < bare[0, 0].sum()
+    assert (bare[0, 0] | with_margin[0, 0]).equal(bare[0, 0])
+
+
+def test_wall_margin_applies_to_both_axes_at_any_yaw():
+    occ, meta = _occupancy([[10.0, 10.0]])
+    angles = torch.tensor([math.pi / 2])            # blade along y
+    margin = 0.015
+    free = free_placements(occ, meta, angles, TOOL_L, TOOL_W, wall_margin=margin)
+
+    cells = int(math.ceil((TOOL_L / 2 + margin) / RES))
+    assert not free[0, 0, :cells, :].any()
+    assert not free[0, 0, meta["H"] - cells:, :].any()
+
+
 def test_clearance_is_zero_on_obstacles_and_positive_in_free_space():
     occ, meta = _occupancy([[0.0, 0.0]])
     dist = clearance_map(occ, meta)

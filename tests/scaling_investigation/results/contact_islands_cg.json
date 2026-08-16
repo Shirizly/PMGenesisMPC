@@ -1,0 +1,26 @@
+[
+  {
+    "n_particles": 50,
+    "variant": "cg",
+    "ok": false,
+    "error": "_call__\n    res = method(ctx, node)\n  File \"/home/alon/anaconda3/envs/pme/lib/python3.10/site-packages/quadrants/lang/ast/ast_transformer.py\", line 666, in build_Attribute\n    node.ptr = getattr(node.value.ptr, node.attr)\nAttributeError: 'RigidSolver' object has no attribute 'func_solve_mass_batch'\n\n\n\u001b[0m\n\u001b[38;5;159m[Genesis] [00:14:06] [INFO] \ud83d\udca4 Exiting Genesis and caching compiled kernels...\u001b[0m\n"
+  },
+  {
+    "n_particles": 100,
+    "variant": "cg",
+    "ok": false,
+    "error": "_call__\n    res = method(ctx, node)\n  File \"/home/alon/anaconda3/envs/pme/lib/python3.10/site-packages/quadrants/lang/ast/ast_transformer.py\", line 666, in build_Attribute\n    node.ptr = getattr(node.value.ptr, node.attr)\nAttributeError: 'RigidSolver' object has no attribute 'func_solve_mass_batch'\n\n\n\u001b[0m\n\u001b[38;5;159m[Genesis] [00:14:41] [INFO] \ud83d\udca4 Exiting Genesis and caching compiled kernels...\u001b[0m\n"
+  },
+  {
+    "n_particles": 150,
+    "variant": "cg",
+    "ok": false,
+    "error": "_call__\n    res = method(ctx, node)\n  File \"/home/alon/anaconda3/envs/pme/lib/python3.10/site-packages/quadrants/lang/ast/ast_transformer.py\", line 666, in build_Attribute\n    node.ptr = getattr(node.value.ptr, node.attr)\nAttributeError: 'RigidSolver' object has no attribute 'func_solve_mass_batch'\n\n\n\u001b[0m\n\u001b[38;5;159m[Genesis] [00:15:24] [INFO] \ud83d\udca4 Exiting Genesis and caching compiled kernels...\u001b[0m\n"
+  },
+  {
+    "n_particles": 200,
+    "variant": "cg",
+    "ok": false,
+    "error": "_call__\n    res = method(ctx, node)\n  File \"/home/alon/anaconda3/envs/pme/lib/python3.10/site-packages/quadrants/lang/ast/ast_transformer.py\", line 666, in build_Attribute\n    node.ptr = getattr(node.value.ptr, node.attr)\nAttributeError: 'RigidSolver' object has no attribute 'func_solve_mass_batch'\n\n\n\u001b[0m\n\u001b[38;5;159m[Genesis] [00:16:22] [INFO] \ud83d\udca4 Exiting Genesis and caching compiled kernels...\u001b[0m\n"
+  }
+]

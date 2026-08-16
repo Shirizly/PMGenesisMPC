@@ -80,6 +80,59 @@ def placement_feasibility(n_particles, particle_size, box_vol, wall_thickness,
     }
 
 
+def resolve_env_counts(spec, material, cli_override=None):
+    """Work out how many envs to run per object count, and say where from.
+
+    ``plan.n_envs`` may be either a literal ``{n_objects: n_envs}`` mapping or a
+    path to a `throughput_optimal.yaml` produced by
+    ``tests/scaling_investigation/benchmark_throughput.py``. Referencing the
+    measurement rather than copying its numbers is the point: the throughput
+    optimum moved by more than an order of magnitude when the action sampler
+    changed (2 envs -> 64 at 100 objects), and a copied table gives no signal
+    when that happens.
+
+    A throughput optimum is specific to the material it was measured on, so the
+    recorded conditions are checked against the plan and any divergence is
+    reported rather than silently accepted.
+
+    Returns (mapping, provenance_string, warnings).
+    """
+    source = cli_override if cli_override is not None else spec.get("n_envs")
+    warnings = []
+
+    if isinstance(source, dict):
+        return ({int(k): int(v) for k, v in source.items()},
+                "literal values in the plan", warnings)
+
+    path = Path(source)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if not path.exists():
+        raise FileNotFoundError(
+            f"plan.n_envs points at {path}, which does not exist. Run "
+            f"`python -m tests.scaling_investigation.benchmark_throughput` "
+            f"to produce it, or replace it with a literal mapping.")
+
+    with open(path) as f:
+        blob = yaml.safe_load(f)
+    counts = {int(k): int(v) for k, v in blob["n_envs"].items()}
+    cond = blob.get("measured_under", {})
+
+    for key in ("shape", "particle_size", "particle_friction",
+                "particle_density", "box_friction"):
+        want, got = material.get(key), cond.get(key)
+        if got is not None and want is not None and got != want:
+            warnings.append(f"measured at {key}={got}, this run uses {want}")
+    if not cond.get("shared_travel_distance", True):
+        warnings.append("measured WITHOUT shared travel distance; collection "
+                        "uses it, so these counts understate what is achievable")
+
+    prov = (f"{path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path}"
+            f" (measured {cond.get('measured_at', 'at an unrecorded time')}"
+            f"{', ' + cond['gpu'] if cond.get('gpu') else ''})")
+    return counts, prov, warnings
+
+
 def free_vram_gib():
     try:
         import torch
@@ -165,6 +218,9 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--plan", default="configs/collection_dry_run.yaml",
                    help="collection plan YAML, relative to Genesis/")
+    p.add_argument("--n-envs-from", default=None, metavar="PATH",
+                   help="override plan.n_envs with a throughput_optimal.yaml "
+                        "produced by benchmark_throughput.py")
     p.add_argument("--env-scale", type=float, default=1.0,
                    help="multiply every planned n_envs by this. The planned "
                         "values are measured OOM ceilings, so use 0.5 on a "
@@ -178,6 +234,10 @@ def parse_args():
                    help="open a live viewer window. Forces n_envs=1 — the "
                         "viewer renders every env, so a batched run is both "
                         "unreadable and far slower with it on")
+    p.add_argument("--seed", type=int, default=None,
+                   help="base seed, forwarded to each n_objects run offset by "
+                        "its own index so the runs do not all draw the same "
+                        "actions. Omit for an unseeded (non-reproducible) run.")
     p.add_argument("--debug", action="store_true")
     return p.parse_args()
 
@@ -195,6 +255,9 @@ def main():
     n_list = args.only or spec["n_objects"]
     size = float(mat["particle_size"])
 
+    env_counts, env_provenance, env_warnings = resolve_env_counts(
+        spec, mat, args.n_envs_from)
+
     print(f"=== collection plan: {plan_path.name} ===")
     print(f"  shape={mat['shape']} size={size*1000:.1f} mm  "
           f"friction={mat['particle_friction']} density={mat['particle_density']} "
@@ -202,6 +265,9 @@ def main():
     print(f"  samples/env={spec['samples_per_env']}  batches={spec['n_batches']}  "
           f"state_library={spec['state_library_settles']}  "
           f"placement_aware={spec['placement_aware']}")
+    print(f"  n_envs from: {env_provenance}")
+    for w in env_warnings:
+        print(f"  !! env counts may not apply: {w}")
     if args.viewer:
         print(f"  VIEWER={args.viewer} -> n_envs forced to 1")
 
@@ -214,8 +280,13 @@ def main():
     for n in n_list:
         feas = placement_feasibility(n, size, base["box"]["vol"],
                                      base["box"]["wall_thickness"], mat["shape"])
+        if not args.viewer and n not in env_counts:
+            print(f"  n={n:>4}  SKIP — no measured env count for this object "
+                  f"count. Add it to the benchmark plan and re-run "
+                  f"benchmark_throughput, or set plan.n_envs literally.")
+            continue
         n_envs = 1 if args.viewer else max(
-            1, int(spec["n_envs"].get(n, 1) * args.env_scale))
+            1, int(env_counts[n] * args.env_scale))
         est = estimate_vram_gib(n, n_envs)
 
         if not feas["feasible"]:
@@ -247,7 +318,7 @@ def main():
 
     # ---------------- run ----------------
     results = {}
-    for n, n_envs in runnable:
+    for run_idx, (n, n_envs) in enumerate(runnable):
         out_rel = f"{plan['output_root']}"
         cmd = [
             sys.executable, "-m", "Genesis.data_collection_clean",
@@ -267,6 +338,11 @@ def main():
             cmd += ["--state-library", str(spec["state_library_settles"])]
         if spec["placement_aware"]:
             cmd += ["--placement-aware"]
+        if args.seed is not None:
+            # Offset per run: the same seed in every subprocess would draw the
+            # identical action sequence at every object count, which looks like
+            # reproducibility but is a correlated dataset.
+            cmd += ["--seed", str(args.seed + run_idx)]
         if args.viewer:
             cmd += ["--viewer-type", args.viewer]
         if args.debug:

@@ -28,19 +28,23 @@ material:
 plan:
   n_objects: [20, 50, 70, 100, 150, 200]
 
-  # Parallel envs per n_objects. These are the MEASURED OOM ceilings on an
-  # 8 GB RTX 4070 with the shipped max_collision_pairs default
-  # (tests/scaling_investigation/benchmark_scaling.py --vram-only). They are ceilings, not
-  # recommendations: n=50 at 128 envs used 7.22 GiB of 7.62 GiB total, so any
-  # other GPU consumer (a browser, an LLM server) will push it over. Use
-  # --env-scale 0.5 for headroom on a shared card.
-  n_envs:
-    20: 128        # not measured directly; n=50 fits 128, and 20 is strictly smaller
-    50: 128
-    70: 64
-    100: 64
-    150: 32
-    200: 32
+  # Parallel envs per n_objects. This REFERENCES the throughput benchmark
+  # rather than copying its numbers, so the plan cannot silently go stale:
+  #   python -m tests.scaling_investigation.benchmark_throughput \
+  #       --plan configs/throughput_benchmark.yaml
+  #
+  # That matters more than it sounds. These counts were originally taken from
+  # the VRAM ceiling (how many envs FIT), which is not the same question as how
+  # many are FASTEST -- and the optimum then moved by more than an order of
+  # magnitude (2 envs -> 64 at 100 objects) when the action sampler stopped
+  # letting one long push set the sweep length for the whole batch. A literal
+  # mapping here would have kept quietly recommending 2.
+  #
+  # run_collection.py checks the material recorded in that file against this
+  # plan and warns if they diverge, since a throughput optimum is specific to
+  # the material it was measured on. A literal {n_objects: n_envs} mapping is
+  # still accepted, and --n-envs-from overrides either.
+  n_envs: Genesis/configs/measured/throughput_optimal.yaml
 
   # Transitions per environment per batch, and number of batches.
   # samples_per_env=1, n_batches=1 => exactly one transition per env per

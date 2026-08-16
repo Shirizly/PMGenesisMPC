@@ -133,7 +133,8 @@ def _rotated_rect_kernel(length: float, width: float, angle: float,
 
 def free_placements(occupancy: torch.Tensor, meta: dict, angles: torch.Tensor,
                     tool_length: float, tool_width: float,
-                    clearance: float = 0.0) -> torch.Tensor:
+                    clearance: float = 0.0,
+                    wall_margin: float = 0.0) -> torch.Tensor:
     """Free tool-centre positions per orientation.
 
     Returns (n_envs, n_angles, H, W) bool: True where the tool, at that yaw,
@@ -142,6 +143,13 @@ def free_placements(occupancy: torch.Tensor, meta: dict, angles: torch.Tensor,
     Implemented as a dilation of the occupancy by the rotated tool rectangle
     (Minkowski sum), which is what turns an overlap test into a point-in-set
     test in configuration space.
+
+    ``clearance`` inflates the tool against PARTICLES; ``wall_margin`` keeps it
+    clear of the WALLS. They are separate because they answer different
+    questions, and because the blind sampler in ``generate_action_samples``
+    applies a wall margin of its own — leaving this at 0 makes placement-aware
+    sampling draw touchdowns closer to the rim than the blind sampler ever
+    would, which is a distribution shift rather than a refinement.
     """
     n_envs = occupancy.shape[0]
     occ = occupancy.float().unsqueeze(1)              # (n_envs, 1, H, W)
@@ -162,8 +170,10 @@ def free_placements(occupancy: torch.Tensor, meta: dict, angles: torch.Tensor,
     # extent along each axis at that yaw.
     H, W, res = meta["H"], meta["W"], meta["resolution"]
     for a_i, angle in enumerate(angles.tolist()):
-        ext_x = abs(math.cos(angle)) * tool_length / 2 + abs(math.sin(angle)) * tool_width / 2
-        ext_y = abs(math.sin(angle)) * tool_length / 2 + abs(math.cos(angle)) * tool_width / 2
+        ext_x = (abs(math.cos(angle)) * tool_length / 2
+                 + abs(math.sin(angle)) * tool_width / 2 + wall_margin)
+        ext_y = (abs(math.sin(angle)) * tool_length / 2
+                 + abs(math.cos(angle)) * tool_width / 2 + wall_margin)
         mx, my = int(math.ceil(ext_x / res)), int(math.ceil(ext_y / res))
         if mx:
             free[:, a_i, :, :mx] = False

@@ -260,7 +260,17 @@ tests/
                                   verify_fixes.py and verify_new_features.py
                                   there are the end-to-end assertions worth
                                   re-running after touching
-                                  Genesis/sandbox_manipulation_clean.py.
+                                  Genesis/sandbox_manipulation_clean.py;
+                                  probe_collection_health.py and
+                                  record_simulation_video.py are the pair to
+                                  run before trusting a long collection —
+                                  the first checks a realistic run's output
+                                  statistics (goal-reach rate, per-env
+                                  settledness, action-space bias, escaped
+                                  particles), the second renders it to video
+                                  for whatever nobody thought to measure.
+                                  Findings from both are in section 8 of
+                                  docs/scaling_to_200_objects.md.
 
 utils.py                shared root-level helpers (YAML I/O, action geometry,
                         point-cloud ops, goal-shape generation,

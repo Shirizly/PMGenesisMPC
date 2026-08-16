@@ -130,3 +130,99 @@ def test_library_rejects_wrong_shape():
 def test_sample_index_in_range():
     lib = StateLibrary(torch.randn(7, 5, 7))
     assert all(0 <= lib.sample_index() < 7 for _ in range(50))
+
+
+def test_default_library_path_matches_dataset_layout():
+    """The library must be findable where a collection run wrote it."""
+    from state_library import default_library_path, STATE_LIBRARY_FILENAME
+
+    p = default_library_path("data/dry_run", "cube", 200, 0.005)
+    assert p.as_posix() == f"data/dry_run/cube/n200/size0.005/{STATE_LIBRARY_FILENAME}"
+
+
+class _FakeSim:
+    """Minimal stand-in for SandboxManipulation's per-env state interface."""
+
+    def __init__(self, n_envs, n_particles):
+        self._n_envs = n_envs
+        self.material = [object()] * n_particles
+        self._particle_state = torch.zeros(n_envs, n_particles, 7)
+        self.written = None
+
+    def set_particle_state(self, pos, quat):
+        self.written = (pos, quat)
+
+
+def test_apply_per_env_gives_each_env_its_own_state():
+    lib = StateLibrary(torch.randn(16, 12, 7))
+    sim = _FakeSim(n_envs=4, n_particles=12)
+
+    idx = lib.apply_per_env(sim, indices=[0, 5, 5, 9])
+
+    assert idx == [0, 5, 5, 9]
+    pos, quat = sim.written
+    assert pos.shape == (4, 12, 3) and quat.shape == (4, 12, 4)
+    # env 0 and env 1 drew different library entries -> different poses
+    assert not torch.allclose(pos[0], pos[1])
+    # envs 1 and 2 drew the same entry -> identical poses
+    assert torch.allclose(pos[1], pos[2])
+    assert torch.allclose(pos[3], lib.states[9, :, 0:3])
+
+
+def test_apply_per_env_rejects_wrong_index_count():
+    lib = StateLibrary(torch.randn(16, 12, 7))
+    with pytest.raises(ValueError):
+        lib.apply_per_env(_FakeSim(4, 12), indices=[0, 1])
+
+
+def test_apply_per_env_rejects_particle_count_mismatch():
+    lib = StateLibrary(torch.randn(16, 12, 7))
+    with pytest.raises(ValueError):
+        lib.apply_per_env(_FakeSim(2, 40), indices=[0, 1])
+
+
+def test_next_index_draws_without_replacement():
+    """Every state is used once before any is used twice."""
+    lib = StateLibrary(torch.randn(8, 5, 7))
+    drawn = [lib.next_index() for _ in range(8)]
+    assert sorted(drawn) == list(range(8))
+    assert lib.refills == 0
+
+
+def test_next_index_refills_after_exhaustion():
+    lib = StateLibrary(torch.randn(4, 5, 7))
+    first = [lib.next_index() for _ in range(4)]
+    assert lib.draws_remaining == 0
+
+    second = [lib.next_index() for _ in range(4)]
+    assert sorted(first) == sorted(second) == list(range(4))
+    assert lib.refills == 1, "wrapping must be reported, it signals a short library"
+
+
+def test_draws_remaining_counts_down():
+    lib = StateLibrary(torch.randn(5, 5, 7))
+    assert lib.draws_remaining == 5
+    lib.next_index()
+    assert lib.draws_remaining == 4
+
+
+def test_apply_broadcasts_one_state_to_every_env():
+    """Collection deliberately shares one initial state across envs."""
+    lib = StateLibrary(torch.randn(6, 9, 7))
+    sim = _FakeSim(n_envs=4, n_particles=9)
+    sim._particle_state = torch.zeros(4, 9, 7)
+
+    idx = lib.apply(sim, index=2)
+
+    assert idx == 2
+    pos, quat = sim.written
+    # a single state, left for set_particle_state to broadcast
+    assert pos.shape[0] == 1 and quat.shape[0] == 1
+    assert torch.allclose(pos[0], lib.states[2, :, 0:3])
+
+
+def test_apply_without_index_consumes_the_permutation():
+    lib = StateLibrary(torch.randn(3, 9, 7))
+    sim = _FakeSim(n_envs=2, n_particles=9)
+    used = {lib.apply(sim) for _ in range(3)}
+    assert used == {0, 1, 2}, "successive batches must get distinct states"

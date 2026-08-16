@@ -29,21 +29,52 @@ simulation:
   performance_mode : True
 
 rigid_options:
-  # Genesis' own defaults. Previously 10 / 10 / 1e-4 / 0.05, i.e. a fifth of the
-  # solver budget. Measured A/B (tests/scaling_investigation/probe_settle_ab.py, 200 cubes): together
-  # with holding the plate by control instead of re-teleporting it every step,
-  # restoring these drops the settled-pile noise floor 8x (0.90 -> 0.11 mm/s at
-  # q99.5) and the worst single particle from 25.1 mm/s / 7.22 rad/s to
-  # 0.2 mm/s / 0.07 rad/s -- at 0.81x the baseline cost per step, because the
-  # per-step collider/constraint resets that were removed cost more than the
-  # extra iterations do.
-  iterations: 50
-  ls_iterations: 50
-  tolerance: 1e-6
-  ls_tolerance: 0.01
+  # Solver budget: a fifth of Genesis' defaults (50/50/1e-6/0.01), and measured
+  # to be the right trade here.
+  #
+  # These were briefly raised to Genesis' defaults on the strength of a
+  # SETTLE-only A/B, where the extra iterations were nearly free because the
+  # plate is out of contact and the pile is at rest. Measured on a broadside
+  # PUSH -- the regime that actually dominates collection cost -- 50 iterations
+  # is 1.6-1.8x slower per step (770 vs 482 ms at 1 env, 1358 vs 765 ms at 4).
+  # Meanwhile the settling improvement that mattered came from holding the plate
+  # by control rather than re-teleporting it each step, not from the iteration
+  # count: at 10 iterations that fix alone already takes the worst particle from
+  # 25.1 mm/s to 1.0 mm/s and the noise floor to 0.21 mm/s, comfortably inside
+  # the 1 mm/s rest threshold. See tests/scaling_investigation/probe_push_cost.py.
+  iterations: 10
+  ls_iterations: 10
+  tolerance: 1e-4
+  ls_tolerance: 0.05
+
+  # box_box_detection MUST stay on, and not only for contact quality: it sets
+  # n_contacts_per_pair to 16 instead of 5, so turning it off silently cuts the
+  # contact-POINT budget from max_collision_pairs*16 to *5. A 200-cube pile uses
+  # ~826 points during a push, which fits 2400 but overflows 750 -- and that
+  # overflow does not raise, it corrupts memory (measured: CUDA illegal memory
+  # access). Any change here requires re-deriving max_collision_pairs.
   box_box_detection: True
+  # Contact islands are load-bearing: with them off, a push step at 200 cubes
+  # measured 845 SECONDS instead of 0.77 s (~1100x). Do not turn this off.
   use_contact_island: True
   use_hibernation: False
+  # Evaluated against CG and against hibernation and deliberately kept. See
+  # docs/scaling_to_200_objects.md section 8.8 for the measurements.
+  #
+  # Newton builds a dense per-island Hessian, so push cost goes as
+  # island_size^2.64 -- the whole reason 200 objects costs 85x what 100 does.
+  # CG would avoid that and is 5.5x faster on a push, but: its per-island linear
+  # solve is Newton-only upstream, so it can never get the island decomposition
+  # that makes settling cheap (measured 5.9x WORSE there); it carries a ~3%
+  # under-transport bias that is not explained by the island setting; and
+  # CG+islands does not even run in 0.4.5. Hibernation is 5.9x faster on a
+  # settle but is affected by a wake-up bug fixed only in 1.1.2, and upstream's
+  # own example warns it does not suit dense piles.
+  #
+  # Set explicitly rather than left to default because the default FLIPPED
+  # upstream (use_contact_island False -> True in 1.2.0), and an implicit value
+  # that changes under you is how a dataset silently stops being comparable.
+  constraint_solver: Newton
 
 box:
   vol : [0.128, 0.128, 0.04]
@@ -56,7 +87,11 @@ material:
   n_particles : None                        # SET IN DATA_COLLECTION LOOP
   density : None                            # SET IN DATA_COLLECTION LOOP
   friction : None                           # SET IN DATA_COLLECTION LOOP
-safety_margin : 0.005
+# Extra clearance kept between the tool's footprint and the tray wall when
+# drawing a touchdown pose, on top of the tool's own extent at that yaw.
+# Was 0.005 here while the code hardcoded 0.02 and never read this key; set to
+# the value that was actually in force, so changing it now does what it says.
+safety_margin : 0.02
 
 plate:
   speed : 0.125 # m/s                       # cruise speed of the trapezoid profile

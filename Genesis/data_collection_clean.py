@@ -6,6 +6,7 @@ import argparse
 import itertools
 import yaml
 import numpy as np
+import torch
 from pathlib import Path
 
 # Relative imports: sandbox_manipulation_clean does `from .utilities.materials
@@ -15,7 +16,8 @@ from pathlib import Path
 # these as top-level modules fails, and so does running this file as a script
 # from inside Genesis/ — the two failure modes are symmetric and neither works.)
 from .sandbox_manipulation_clean import SandboxManipulation
-from .state_library import build_state_library, StateLibrary, STATE_LIBRARY_FILENAME
+from .state_library import (build_state_library, load_or_build_state_library,
+                            StateLibrary, STATE_LIBRARY_FILENAME)
 
 ##################################
 # PARAMS THAT REQUIRE RESTARTING #
@@ -102,6 +104,11 @@ def parse_args():
              "applied to the post-push settle, where it would bias the "
              "recorded s' toward smaller displacements.")
     parser.add_argument(
+        "--rebuild-state-library", action="store_true",
+        help="settle a fresh library even if a compatible one already exists "
+             "beside the output. Off by default: settling is the dominant "
+             "startup cost, and a library is reusable across runs.")
+    parser.add_argument(
         "--no-state-library-augment", action="store_true",
         help="with --state-library, store only the settled states themselves, "
              "without the symmetry-expanded variants")
@@ -110,6 +117,14 @@ def parse_args():
         help="draw each tool touchdown pose from its free configuration space "
              "so the plate does not descend into a particle; falls back to the "
              "blind draw per sample when no free placement exists")
+    parser.add_argument(
+        "--independent-travel-distance", action="store_true",
+        help="let every env sample its own push length. Off by default: envs "
+             "step in lockstep and the sweep is sized from the longest travel "
+             "in the batch, so independent lengths make every env run for the "
+             "longest one's duration (measured 1.54x of a 2.64x batching "
+             "penalty at 8 envs). Sharing it costs only within-batch variation "
+             "in one of five action dimensions.")
     parser.add_argument(
         "--constant-params", action="store_true",
         help="use one fixed material setting instead of sweeping the "
@@ -120,6 +135,15 @@ def parse_args():
     parser.add_argument("--particle-density", type=float, default=1000.0)
     parser.add_argument("--box-friction", type=float, default=0.3)
     parser.add_argument(
+        "--seed", type=int, default=None,
+        help="seed every random draw in a run: material-property jitter and "
+             "state-library selection (numpy) AND particle spawn poses, "
+             "orientations and action sampling (torch). Without it a run is "
+             "not reproducible at all -- which matters because a dataset is "
+             "only as re-derivable as the actions that produced it, and "
+             "because a run that produces something odd cannot be replayed to "
+             "look at it. Recorded in each batch's saved config.")
+    parser.add_argument(
         "--n-batches", type=int, default=None,
         help="limit how many material batches are collected (default: all). "
              "With --constant-params this is simply how many times the pile is "
@@ -129,7 +153,13 @@ def parse_args():
 
 def main():
     args = parse_args()
-    rng = np.random.default_rng()
+    # Both generators, not just numpy: the particle spawn poses, the random
+    # orientations and the whole action draw are torch calls on the GPU, so
+    # seeding numpy alone would leave everything that actually shapes a
+    # transition unseeded.
+    rng = np.random.default_rng(args.seed)
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
 
     if args.n_envs <= 0:
         raise ValueError("--n-envs must be positive")
@@ -138,6 +168,7 @@ def main():
         raise ValueError("--samples-per-env must be positive")
 
     config = read_yaml(f"configs/{BASIC_SETTING}.yaml")
+    config.setdefault("data_collection", {})["seed"] = args.seed
 
     # Iterate shapes
     shapes = [args.particle_shape] if args.particle_shape != DEFAULT_SHAPES else DEFAULT_SHAPES
@@ -216,14 +247,13 @@ def main():
                     print(f"\n=== building state library "
                           f"({args.state_library} settles) ===", flush=True)
                     try:
-                        state_library = build_state_library(
-                            sm, n_settles=args.state_library,
+                        state_library = load_or_build_state_library(
+                            sm,
+                            Path(__file__).parent / out_path / STATE_LIBRARY_FILENAME,
+                            n_settles=args.state_library,
                             augment=not args.no_state_library_augment,
-                            damping=args.state_library_damping)
-                        saved = state_library.save(
-                            Path(__file__).parent / out_path)
-                        print(f"  saved {len(state_library)} states -> {saved}",
-                              flush=True)
+                            damping=args.state_library_damping,
+                            reuse=not args.rebuild_state_library)
                     except RuntimeError as e:
                         print(f"  could not build state library ({e}); "
                               f"falling back to per-batch shuffling")
@@ -242,6 +272,7 @@ def main():
                             n_samples=args.samples_per_env,
                             path=out_path,
                             placement_aware=args.placement_aware,
+                            shared_travel_distance=not args.independent_travel_distance,
                         )
                     except RuntimeError as e:
                         print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")

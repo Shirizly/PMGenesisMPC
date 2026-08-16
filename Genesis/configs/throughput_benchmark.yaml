@@ -1,0 +1,62 @@
+# Throughput benchmark plan — consumed by
+#   python -m tests.scaling_investigation.benchmark_throughput --plan configs/throughput_benchmark.yaml
+#
+# Purpose: find the n_envs that maximises TRANSITIONS PER SECOND for each object
+# count, and record the full grid behind that choice.
+#
+# This exists because the collection plan's env counts were originally taken
+# from the VRAM ceiling, which is an upper bound, not an operating point. Push
+# cost is the dominant per-transition cost and it does not batch as well as
+# settling does, so the fastest configuration is not necessarily the largest one
+# that fits. See docs/scaling_to_200_objects.md section 1.4.
+
+base_config: basic.yaml
+
+material:
+  shape: cube
+  particle_size: 0.005
+  particle_friction: 0.3
+  particle_density: 1000.0
+  box_friction: 0.3
+
+# Settled-state libraries to seed from, so no cell pays the ~1500-step respawn
+# settle. Layout: <root>/<shape>/n<N>/size<S>/settled_states.pt. Cells fall back
+# to shuffle+settle if no compatible library is found (slow but correct).
+library_root: data/dry_run
+
+plan:
+  n_objects: [20, 50, 70, 100, 150, 200]
+
+  # Doubling ladder, ascending. The sweep stops early per object count (see
+  # stop_after_declines), so the large end is only paid for where it helps.
+  n_envs: [1, 2, 4, 8, 16, 32, 64, 128]
+
+  # A transition is one full execute_action + settle, which is the unit that
+  # actually matters. Actions are drawn from generate_action_samples, i.e. the
+  # real distribution of yaw and travel distance -- push cost varies 2-9x with
+  # blade orientation alone, so a fixed action would not be representative.
+  transitions_per_cell: 2
+
+  # Stop climbing n_envs for a given object count once throughput has failed to
+  # improve this many times in a row. Throughput rises while the GPU is
+  # underused and falls once it is saturated, so there is no reason to pay for
+  # the whole ladder at every object count. Set to 0 to force the full sweep.
+  stop_after_declines: 2
+
+  # Skip cells whose estimated VRAM exceeds this fraction of what is free. The
+  # estimate carries a few percent of error, so this is deliberately 1.0 rather
+  # than a safety margin: excluding a cell by estimate would drop
+  # n_objects=200 / n_envs=32, which is measured to fit at 6.98 GiB. A cell that
+  # really does not fit costs one scene build and is recorded as an OOM, which
+  # is better information than a cell that was never tried.
+  vram_fraction_limit: 1.0
+
+output:
+  # Full grid, every cell, machine-readable.
+  results: outputs/scaling_benchmark/throughput_full.json
+  # The winner per object count. Written under configs/, NOT outputs/, on
+  # purpose: outputs/ is gitignored as "reproducible from configs", but this
+  # table is an INPUT that collection plans reference by path, so it has to
+  # travel with the repo. The full grid above stays in outputs/ — that is the
+  # reproducible detail.
+  optimal: Genesis/configs/measured/throughput_optimal.yaml

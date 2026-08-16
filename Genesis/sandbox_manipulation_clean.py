@@ -108,6 +108,17 @@ class SandboxManipulation:
         # always burns its cap. 0.995 tolerates ~1 straggler per 200-cube env.
         self._settle_rest_quantile = float(
             self._sim_params.get('settle_rest_quantile', 0.995))
+        # A max-velocity guard on top of the quantile was tried here and
+        # deliberately NOT kept. The worry was that the quantile bounds how
+        # MANY particles are still moving but not how fast, so s' could be
+        # recorded mid-travel. Measured, the correlation runs the other way:
+        # the fastest residual particles (73 mm/s at 50x128, 27 mm/s at
+        # 100x64) drifted 0.1-1.2 mm over the next 0.2 s -- they vibrate in
+        # place -- while the one genuine late movement (14 mm at 70x64) came
+        # from a particle moving only 7 mm/s, a cube at the top of its tipping
+        # arc where speed passes through a minimum. A max-velocity test would
+        # have paid for extra settling on the harmless cases and still missed
+        # the real one. See docs/scaling_to_200_objects.md section 8.
         self._goal_threshold = 0.001
         
         self._debug = debug
@@ -259,6 +270,28 @@ class SandboxManipulation:
         # alongside a single "real" env. None (default) renders all envs,
         # matching prior single-env behaviour.
         rendered_envs_idx = self._sim_params.get('rendered_envs_idx', None)
+        # Exposed so the constraint solver can be swapped without editing this
+        # file. Genesis defaults to Newton, which with use_contact_island builds
+        # and factorizes a DENSE Hessian per contact island (island_dofs = 6 x
+        # entities in the island); measured cost goes as island_size^2.64, and
+        # that is the whole explanation for the cost cliff at 200 objects (see
+        # docs/scaling_to_200_objects.md section 8.7).
+        #
+        # "CG" would avoid the dense Hessian entirely and is the obvious escape,
+        # but it is BROKEN in Genesis 0.4.5: the kernel references
+        # RigidSolver.func_solve_mass_batch, which does not exist, and every
+        # scene using it fails at compile time. Left exposed anyway so it can be
+        # re-tested against a newer Genesis without touching this file.
+        # Default preserves the previous behaviour exactly.
+        _cs_name = rigid_cfg.get("constraint_solver", "Newton")
+        try:
+            _constraint_solver = getattr(gs.constraint_solver, _cs_name)
+        except AttributeError as e:
+            raise ValueError(
+                f"rigid_options.constraint_solver={_cs_name!r} is not a Genesis "
+                f"solver; expected one of "
+                f"{[n for n in dir(gs.constraint_solver) if not n.startswith('_')]}"
+            ) from e
         self._scene = gs.Scene(
             sim_options=gs.options.SimOptions(
                 dt       = self._config["simulation"].get('dt', 4e-3),
@@ -275,6 +308,7 @@ class SandboxManipulation:
                 max_collision_pairs=rigid_cfg.get(
                     "max_collision_pairs", self._default_max_collision_pairs()),
                 enable_multi_contact=rigid_cfg.get("enable_multi_contact", True),
+                constraint_solver=_constraint_solver,
             ),
             viewer_options = viewer_options,
             vis_options=gs.options.VisOptions(
@@ -340,7 +374,10 @@ class SandboxManipulation:
         )
         
         # add granular
-        self._safety_margin = 0.02
+        # Read from config rather than hardcoded: the key existed in basic.yaml
+        # and was silently ignored, so anyone tuning it got no effect at all.
+        # The default is the value that was actually in force.
+        self._safety_margin = self._config.get("safety_margin", 0.02)
 
         particle_size = self._sampled_params.get(
             "particle_size",
@@ -860,10 +897,21 @@ class SandboxManipulation:
     def _get_particle_quats(self):
         return self._scene.rigid_solver.get_links_quat(links_idx=self._particle_links_idx)
 
-    def update_material_state(self, store_other=False):
+    def update_material_state(self, store_other=False, on_step=None):
         """
         Returns particle state (positions and sizes) for all environments.
         Optimized for GPU processing.
+
+        Args:
+            on_step: optional callback(step), invoked after each settle step.
+                Same hook convention as ``execute_action``'s ``on_phase``. The
+                settle is the one phase with no other window into it — it exits
+                on a convergence test, so its duration is not known in advance
+                and nothing outside this loop can observe the pile collapsing.
+                Used by ``tests/scaling_investigation/record_simulation_video.py``
+                to render the layered spawn, which is the least physically
+                natural moment in the pipeline and therefore the one most worth
+                watching. A no-op when None.
 
         Returns:
             Tensor of shape [n_envs, n_particles, 4] with (x, y, z, size)
@@ -895,6 +943,8 @@ class SandboxManipulation:
         settled_at = None
         for step in range(self._settle_steps):
             self._step_scene()
+            if on_step is not None:
+                on_step(step)
             if (step + 1) % self._settle_check_every == 0 and self._pile_is_at_rest():
                 settled_at = step + 1
                 break
@@ -1021,6 +1071,27 @@ class SandboxManipulation:
             "n_contacts_per_pair": ncp,
         }
 
+    def escaped_particle_count(self) -> int:
+        """Particles outside the tray interior, summed over all envs.
+
+        A particle can only leave by being squeezed through a wall, which means
+        the contact solver failed for it. It matters more than it sounds: each
+        transition's ``s`` is the previous transition's ``s'``, so one escape
+        silently corrupts every later sample in that env, and nothing else in
+        the pipeline would notice. Recorded per batch alongside the collected
+        data so a finished dataset can be audited without re-running it.
+
+        The tolerance is deliberately loose (5 mm laterally, 20 mm above the
+        wall) — this is looking for particles that have plainly left, not for
+        ones resting slightly proud of the rim.
+        """
+        pos = self._get_particle_positions()[:, :getattr(self, "_n_active", None)]
+        width, depth, height = self._box_params["vol"]
+        half = torch.tensor([width / 2, depth / 2], device=pos.device)
+        out_xy = (pos[..., :2].abs() > half + 0.005).any(dim=-1)
+        out_z = (pos[..., 2] < -0.005) | (pos[..., 2] > height + 0.02)
+        return int((out_xy | out_z).sum())
+
     def set_particle_state(self, pos: torch.Tensor, quat: torch.Tensor) -> None:
         """
         Set every environment's particle pose directly from given tensors,
@@ -1028,8 +1099,9 @@ class SandboxManipulation:
 
         Parameters
         ----------
-        pos  : (1, n_particles, 3) — broadcast to all ``n_envs``.
-        quat : (1, n_particles, 4) — broadcast to all ``n_envs``.
+        pos  : (1, n_particles, 3) broadcast to all ``n_envs``, or
+               (n_envs, n_particles, 3) to give each env a different state.
+        quat : (1, n_particles, 4) or (n_envs, n_particles, 4), likewise.
 
         Lower-level primitive underlying ``broadcast_state_from_env``.
         Planners that must keep an *immutable* reference state across
@@ -1159,6 +1231,15 @@ class SandboxManipulation:
         # bookkeeping. That also removes the two GPU syncs the old loop paid on
         # every step (a .nonzero() and a .item()), which dominated the sweep's
         # per-step cost at small n_envs.
+        # Check the contact budget HERE, not only after settling: the pile is
+        # most compressed at the end of a sweep, so this is where usage peaks.
+        # It also cannot be left to Genesis' own error bit, because the loop
+        # above calls set_dofs_position every step and that clears _errno. An
+        # unnoticed overflow does not degrade gracefully — with the point cap
+        # exceeded it has been observed to corrupt memory outright (CUDA
+        # illegal memory access).
+        self._check_contact_budget()
+
         final_pos = self.plate.get_pos()
         final_err = torch.linalg.norm(final_pos[:, :2] - p_end[:, :2], axis=1)
         reached_goal = final_err < self._goal_threshold
@@ -1214,14 +1295,20 @@ class SandboxManipulation:
         )
         return s, torch.clamp(v, min=0.0)
     
-    def plate_position_translation(self, p_start, p_end, n_steps: int | None = None):
+    def plate_position_translation(self, p_start, p_end, n_steps: int | None = None,
+                                   on_step=None):
         """
         Move plates with position control across all environments.
-        
+
         Args:
             p_start: Starting positions [n_envs, 3] or [3]
             p_end: Ending positions [n_envs, 3] or [3]
             n_steps: Override step count (defaults to self._pos_ctrl_steps)
+            on_step: optional callback(step), invoked after each step. This is
+                the descent and the lift — the phases where the tool is moved
+                by teleport-then-interpolate rather than by the servo, so if it
+                ever passes through a particle it happens here. A no-op when
+                None.
         """
         n = n_steps if n_steps is not None else self._pos_ctrl_steps
         steps_0to1 = (self._steps_0to1 if n_steps is None
@@ -1236,6 +1323,8 @@ class SandboxManipulation:
                 dofs_idx_local=self._vertical_dofs_local
             )
             self._step_scene()
+            if on_step is not None:
+                on_step(i)
 
     def generate_action_samples(
             self,
@@ -1245,6 +1334,7 @@ class SandboxManipulation:
             placement_angles: int = 16,
             placement_clearance: float = 0.0,
             placement_clearance_bias: float = 0.0,
+            shared_travel_distance: bool = False,
         ):
         """
         Generate random action samples for all environments.
@@ -1264,6 +1354,13 @@ class SandboxManipulation:
             placement_clearance: extra margin added around the tool footprint.
             placement_clearance_bias: >0 biases the draw toward placements with
                 more room around them (weight = clearance ** bias).
+            shared_travel_distance: give every env the same push length for a
+                given sample, keeping its own start, direction and yaw. Envs
+                step in lockstep and the sweep is sized from the longest travel
+                in the batch, so independent distances make every env run for
+                the longest one's duration — measured at 1.54x of a 2.64x
+                batching penalty at 8 envs. Off by default so single-env and
+                MPC callers are unaffected; collection turns it on.
 
         Returns:
             Tuple of (action_starts, action_stops, angles) each of shape [n_envs * n_samples, 3/1]
@@ -1304,7 +1401,36 @@ class SandboxManipulation:
                 clearance_bias=placement_clearance_bias,
             )
 
+        if shared_travel_distance and self._n_envs > 1:
+            action_stops = self._equalize_batch_travel(
+                action_starts, action_stops,
+                low.reshape(self._n_envs, n_samples, 2),
+                high.reshape(self._n_envs, n_samples, 2))
+
         return action_starts, action_stops, angles
+
+    def _equalize_batch_travel(self, action_starts, action_stops, low, high):
+        """Give every env in a batch the same push length for each sample.
+
+        Envs step in lockstep and ``plate_velocity_translation`` sizes the sweep
+        from the LONGEST travel in the batch, so one long push makes every env
+        run for its duration. Sharing the distance removes that coupling — worth
+        1.54x of a measured 2.64x batching penalty at 8 envs (see
+        Genesis/action_sampling.py). Start point, direction and blade yaw stay
+        per-env, and the distance still varies from batch to batch, so only the
+        within-batch spread is given up.
+        """
+        from .action_sampling import equalize_travel_distance, shared_batch_distance
+
+        starts_xy, stops_xy = action_starts[..., :2], action_stops[..., :2]
+        dist = (stops_xy - starts_xy).norm(dim=-1, keepdim=True)
+        target = shared_batch_distance(dist).expand_as(dist)
+        new_xy, clipped = equalize_travel_distance(
+            starts_xy, stops_xy, low, high, target)
+        if self._debug and bool(clipped.any()):
+            self._log(f"shared travel distance: {int(clipped.sum())}/"
+                      f"{clipped.numel()} pushes truncated at the box boundary")
+        return torch.cat((new_xy, action_stops[..., 2:]), dim=-1)
 
     def _apply_placement_aware_starts(self, action_starts, angles, n_samples, *,
                                       resolution, n_angles, clearance,
@@ -1342,7 +1468,8 @@ class SandboxManipulation:
             yaw_bins = (-torch.pi / 2) + torch.arange(
                 n_angles, device=gs.device, dtype=torch.float32) * (torch.pi / n_angles)
             free = free_placements(occ, meta, yaw_bins, tool_length, tool_width,
-                                   clearance=clearance)
+                                   clearance=clearance,
+                                   wall_margin=self._safety_margin)
             dist = clearance_map(occ, meta) if clearance_bias > 0 else None
             xy, yaw, ok = sample_free_placements(
                 free, meta, yaw_bins, n_samples, clearance=dist,
@@ -1372,6 +1499,7 @@ class SandboxManipulation:
             p_stop,
             angle,
             on_phase=None,
+            on_step=None,
         ):
         """
         Execute action (lower, sweep, lift) for all environments.
@@ -1391,10 +1519,19 @@ class SandboxManipulation:
                 to capture an intermediate video frame, log, or debug-plot the
                 mid-action state. A no-op when None; callers that don't pass
                 it (e.g. batched rollout planning) see no behavior change.
+            on_step: optional callback(phase: str, step: int), invoked after
+                EVERY simulation step of the push, with phase one of
+                'lower' / 'sweep' / 'lift'. Where on_phase gives two snapshots,
+                this gives every frame — which is what a video needs, and what
+                a per-step diagnostic needs. A no-op when None.
 
         Returns:
             Tensor of shape [n_envs] with success status
         """
+        def _phase_step(phase):
+            if on_step is None:
+                return None
+            return lambda step, *_: on_step(phase, step)
 
         # Lower: teleport to clearance height, then simulate only the short
         # final descent into operating position.  This skips simulating the
@@ -1404,7 +1541,8 @@ class SandboxManipulation:
         self._vertical_dof_fix[:, 4] = angle
         lower_start = p_start + self._clearance_offset
         self.plate.set_pos(lower_start, zero_velocity=True)
-        self.plate_position_translation(lower_start, p_start, self._clearance_ctrl_steps)
+        self.plate_position_translation(lower_start, p_start, self._clearance_ctrl_steps,
+                                        on_step=_phase_step('lower'))
         if on_phase is not None:
             on_phase('post_lower')
 
@@ -1413,6 +1551,7 @@ class SandboxManipulation:
             p_start,
             p_stop,
             angle,
+            on_step=_phase_step('sweep'),
         )
         if on_phase is not None:
             on_phase('post_sweep')
@@ -1423,7 +1562,8 @@ class SandboxManipulation:
         self._vertical_dof_fix[:, 0] = final_pos[:, 0]
         self._vertical_dof_fix[:, 1] = final_pos[:, 1]
         self.plate_position_translation(
-            final_pos, final_pos + self._clearance_offset, self._clearance_ctrl_steps)
+            final_pos, final_pos + self._clearance_offset, self._clearance_ctrl_steps,
+            on_step=_phase_step('lift'))
         self.plate.set_pos(final_pos + self._lift_height_tensor, zero_velocity=True)
 
         return reached_goal, final_pos
@@ -1548,6 +1688,7 @@ class SandboxManipulation:
             n_samples: int = 200,
             path : str | Path = "training",
             placement_aware: bool = False,
+            shared_travel_distance: bool = True,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -1560,6 +1701,10 @@ class SandboxManipulation:
                 configuration space rather than blindly (see
                 generate_action_samples). Falls back per sample where no
                 collision-free placement exists.
+            shared_travel_distance: share one push length across the batch per
+                sample (see generate_action_samples). On by default here: it is
+                a large throughput win and costs only within-batch variation in
+                one of five action dimensions.
         """
         max_samples = n_samples * self._n_envs
 
@@ -1568,6 +1713,7 @@ class SandboxManipulation:
             "samples_per_env": n_samples,
             "goal_threshold": self._goal_threshold,
             "placement_aware": bool(placement_aware),
+            "shared_travel_distance": bool(shared_travel_distance),
         })
 
         # Allocate once or reuse if same size
@@ -1587,7 +1733,8 @@ class SandboxManipulation:
 
         # Generate random action samples per env
         action_starts, action_stops, angles = self.generate_action_samples(
-            n_samples, placement_aware=placement_aware)
+            n_samples, placement_aware=placement_aware,
+            shared_travel_distance=shared_travel_distance)
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 
@@ -1626,11 +1773,33 @@ class SandboxManipulation:
         print(f">> Total samples collected  : {num_collected_samples}")
         print(f">> Number of failed samples : {max_samples - num_collected_samples}")
 
+        # Two self-audit fields, so a saved dataset carries the evidence that it
+        # is trustworthy instead of requiring the run to be repeated to find out.
+        # Both failures they cover are silent: a contact-budget overflow drops
+        # contacts without raising (the error bit Genesis would set is cleared
+        # by the per-step set_dofs_position in the sweep), and an escaped
+        # particle poisons every later transition in its env because s comes
+        # from the previous s'.
+        try:
+            usage = self.contact_budget_usage()
+            budget = {
+                "broad_pairs": usage["broad_pairs"], "broad_cap": usage["broad_cap"],
+                "contact_points": usage["contact_points"],
+                "contact_cap": usage["contact_cap"],
+                "worst_fraction_of_cap": max(
+                    usage["broad_pairs"] / max(usage["broad_cap"], 1),
+                    usage["contact_points"] / max(usage["contact_cap"], 1)),
+            }
+        except Exception:
+            budget = None
+
         self._config["statistics"] = {
             "n_envs"   : self._n_envs,
             "samples_per_env"  : n_samples,
             "total_samples_collected"  : num_collected_samples,
             "number_of_failed_samples" : max_samples - num_collected_samples,
+            "escaped_particles" : self.escaped_particle_count(),
+            "contact_budget" : budget,
         }
 
         base_dir = Path(__file__).parent

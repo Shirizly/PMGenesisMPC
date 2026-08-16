@@ -1,4 +1,5 @@
 .venv/
+__pycache__/
 Genesis/utilities/__pycache__/*
 Genesis/__pycache__/*
 .github/
@@ -16,3 +17,9 @@ nca_epoch_*.pth
 # Run artifacts (outputs are reproducible from configs)
 outputs/
 mpc_transitions/
+
+# Rendered inspection videos. Regenerate with
+#   python -m tests.scaling_investigation.record_simulation_video
+# The measured numbers alongside them (results/*.json) ARE tracked; the frames
+# are megabytes of binary that say nothing a re-render would not.
+tests/scaling_investigation/results/video/
