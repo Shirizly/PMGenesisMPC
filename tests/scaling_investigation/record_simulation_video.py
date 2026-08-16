@@ -51,6 +51,7 @@ Output goes to ``tests/scaling_investigation/results/video/``.
 """
 
 import argparse
+import inspect
 import math
 import time
 from pathlib import Path
@@ -157,9 +158,20 @@ def main():
         if phase in ("lower", "lift") or step % args.every == 0:
             _render()
 
+    # Genesis moved the output arguments from stop_recording to start_recording
+    # in 1.3.0. Detect rather than branch on a version string, so this runs on
+    # both the pinned 0.4.5 and 1.3.x.
+    fps = max(1, round(1.0 / (sim._scene.dt * args.every)))
+    _rec_args_at_start = "save_to_filename" in inspect.signature(
+        type(next(iter(cams.values()))).start_recording).parameters
+    paths = {view: out_dir / f"{view}_{tag}.mp4" for view in cams}
+
     try:
-        for cam in cams.values():
-            cam.start_recording()
+        for view, cam in cams.items():
+            if _rec_args_at_start:
+                cam.start_recording(save_to_filename=str(paths[view]), fps=fps)
+            else:
+                cam.start_recording()
 
         t0 = time.perf_counter()
         if args.source == "spawn":
@@ -196,11 +208,12 @@ def main():
             # the pile is still creeping when s' is read, it is visible here.
             sim.update_material_state(on_step=grab_settle)
 
-        fps = max(1, round(1.0 / (sim._scene.dt * args.every)))
         for view, cam in cams.items():
-            path = out_dir / f"{view}_{tag}.mp4"
-            cam.stop_recording(save_to_filename=str(path), fps=fps)
-            print(f"  -> {path}")
+            if _rec_args_at_start:
+                cam.stop_recording()
+            else:
+                cam.stop_recording(save_to_filename=str(paths[view]), fps=fps)
+            print(f"  -> {paths[view]}")
         print(f"\n{n_frames} frames per view at {fps} fps "
               f"(= real time; dt={sim._scene.dt*1000:.0f} ms x {args.every})")
     finally:

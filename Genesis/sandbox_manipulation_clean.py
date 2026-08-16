@@ -1060,13 +1060,26 @@ class SandboxManipulation:
         collider = self._scene.rigid_solver.collider
         state, info = collider._collider_state, collider._collider_info
         broad_cap = int(torch.as_tensor(info.max_collision_pairs_broad.to_torch()).max())
-        ncp = int(collider._collider_static_config.n_contacts_per_pair)
         mcp = int(torch.as_tensor(info.max_collision_pairs.to_torch()).max())
+
+        # How the point cap is obtained differs by Genesis version, so read it
+        # rather than assume it. From 1.2.x the collider publishes `max_contacts`
+        # directly, and it is no longer a simple multiple: the buffer is sized
+        # per regime (convex vs nonconvex pairs have different per-pair caps)
+        # and then reduced again by link-pair contact pruning. Recomputing
+        # `mcp * n_contacts_per_pair` there would overstate the cap and hide a
+        # real overflow, which is the one thing this check exists to catch.
+        ncp = None
+        if hasattr(info, "max_contacts"):
+            contact_cap = int(torch.as_tensor(info.max_contacts.to_torch()).max())
+        else:                                    # 0.4.5 and earlier
+            ncp = int(collider._collider_static_config.n_contacts_per_pair)
+            contact_cap = mcp * ncp
         return {
             "broad_pairs": int(torch.as_tensor(state.n_broad_pairs.to_torch()).max()),
             "broad_cap": broad_cap,
             "contact_points": int(torch.as_tensor(state.n_contacts.to_torch()).max()),
-            "contact_cap": mcp * ncp,
+            "contact_cap": contact_cap,
             "max_collision_pairs": mcp,
             "n_contacts_per_pair": ncp,
         }

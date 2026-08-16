@@ -208,14 +208,22 @@ def main():
             u = sim.contact_budget_usage()
             ok = (u["broad_pairs"] < u["broad_cap"]
                   and u["contact_points"] < u["contact_cap"])
-            mcp_needed = max(math.ceil(u["broad_pairs"] / 8),
-                             math.ceil(u["contact_points"] / u["n_contacts_per_pair"]))
+            # From Genesis 1.2.x the point cap is published directly and is no
+            # longer mcp * n_contacts_per_pair (the buffer is sized per convex/
+            # nonconvex regime and then pruned), so the implied mcp can only be
+            # derived from the broad-phase side there.
+            ncp = u.get("n_contacts_per_pair")
+            mcp_needed = math.ceil(u["broad_pairs"] / 8)
+            if ncp:
+                mcp_needed = max(mcp_needed, math.ceil(u["contact_points"] / ncp))
             check("contact usage within configured budget", ok,
                   f"broad {u['broad_pairs']}/{u['broad_cap']}, "
                   f"points {u['contact_points']}/{u['contact_cap']} "
-                  f"-> needs max_collision_pairs >= {mcp_needed} "
-                  f"(Genesis default 150 would "
-                  f"{'OVERFLOW' if mcp_needed > 150 else 'hold'})")
+                  f"-> needs max_collision_pairs >= {mcp_needed}"
+                  + ("" if ncp else " (from broad phase only; this Genesis "
+                                    "publishes the point cap directly)")
+                  + f" (Genesis default 150 would "
+                    f"{'OVERFLOW' if mcp_needed > 150 else 'hold'})")
         except Exception as e:
             check("contact usage within configured budget", False, f"unreadable: {e}")
 

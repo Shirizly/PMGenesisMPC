@@ -134,6 +134,11 @@ VARIANTS = {
     # island should shrink to the neighbourhood of the blade. Requires
     # use_contact_island (Genesis silently disables it otherwise).
     "hibernation":    {"use_hibernation": True},
+    # Genesis >=1.2.x only: CG *with* islands. Blocked in 0.4.5 by two bugs in
+    # solver_island.py, which 1.2.0 deleted outright. Upstream the per-island
+    # linear solve looks Newton-only, so islands may partition without
+    # accelerating CG -- worth measuring rather than assuming either way.
+    "cg_islands_on":  {"constraint_solver": "CG"},
 }
 
 
@@ -178,11 +183,47 @@ def _config(n_particles, particle_size, overrides, box_scale=1.0,
 def island_stats(sim):
     """Island decomposition of the current contact graph, read from the solver.
 
-    Returns None when islands are disabled — there is then no decomposition to
-    read, which is itself the answer for those variants.
+    Two incompatible layouts, because Genesis replaced the implementation in
+    1.2.0 (PR #2972 deleted ``ConstraintSolverIsland`` / ``ContactIsland`` and
+    the whole of ``solver_island.py``):
+
+    * <=1.1.x  ``constraint_solver.contact_island`` — membership per ENTITY,
+      island sizes read from ``island_entity.n``
+    * >=1.2.x  ``constraint_solver.constraint_state.island`` — membership per
+      LINK, via ``links_island_idx``. Sizes have to be counted rather than
+      looked up, which is if anything more direct here: every particle is a
+      single-link entity, so a link count IS a particle count.
+
+    Supporting both keeps the 0.4.5 measurements in results/ reproducible
+    instead of stranding them. Returns None when islands are disabled — there
+    is then no decomposition to read, which is itself the answer.
     """
+    import numpy as np
     cs = sim._scene.rigid_solver.constraint_solver
-    ci = getattr(cs, "contact_island", None)
+
+    state = getattr(cs, "constraint_state", None)
+    island = getattr(state, "island", None) if state is not None else None
+    if island is not None:                                   # >= 1.2.x
+        n_islands = int(np.asarray(island.n_islands.to_numpy()).reshape(-1)[0])
+        if n_islands <= 0:
+            return {"n_islands": 0, "max_entities": 0, "mean_entities": 0.0,
+                    "sum_sq_entities": 0, "sum_cube_entities": 0}
+        idx = np.asarray(island.links_island_idx.to_numpy())
+        idx = idx.reshape(idx.shape[0], -1)[:, 0]            # env 0
+        sizes = np.bincount(idx[idx >= 0], minlength=n_islands)[:n_islands]
+        sizes = sizes[sizes > 0].astype("int64")
+        if sizes.size == 0:
+            return {"n_islands": 0, "max_entities": 0, "mean_entities": 0.0,
+                    "sum_sq_entities": 0, "sum_cube_entities": 0}
+        return {
+            "n_islands": int(sizes.size),
+            "max_entities": int(sizes.max()),
+            "mean_entities": float(sizes.mean()),
+            "sum_sq_entities": int((sizes ** 2).sum()),
+            "sum_cube_entities": int((sizes.astype("float64") ** 3).sum()),
+        }
+
+    ci = getattr(cs, "contact_island", None)                 # <= 1.1.x
     if ci is None:
         return None
     n_islands = int(ci.n_islands.to_numpy()[0])
