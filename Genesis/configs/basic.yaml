@@ -58,6 +58,13 @@ rigid_options:
   # measured 845 SECONDS instead of 0.77 s (~1100x). Do not turn this off.
   use_contact_island: True
   use_hibernation: False
+  # Resists spin about the contact normal. Off by Genesis default, which means a
+  # cube resting on the tray had NO resistance to twisting in place — the blade
+  # could rotate a cube it touched off-centre far more freely than a real one on
+  # a real surface. Matters here because the tool is a thin blade that hits most
+  # particles off their centre of mass, so induced spin is a large part of what
+  # a push actually does.
+  enable_torsional_friction: True
   # Evaluated against CG and against hibernation and deliberately kept. See
   # docs/scaling_to_200_objects.md section 8.8 for the measurements.
   #

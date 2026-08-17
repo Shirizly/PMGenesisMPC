@@ -188,7 +188,44 @@ On 0.4.5 neither was available: CG+islands did not run at all (two bugs in
 fixed in 1.1.2 — which is very likely what our -4 %-transport-with-zero-variance
 measurement was actually detecting.
 
-**These numbers are speed only and must not be acted on yet.** Hibernation
+#### Hibernation is unusable in this pipeline: it produces NaN after a push
+
+Follow-up testing disqualified it before any physics comparison was possible.
+Enabling `use_hibernation` makes the simulation raise
+`Invalid constraint forces causing 'nan'` on the **first step after a sweep**.
+Isolated as follows (n=50 unless noted, seeded from the library):
+
+| case | result |
+|---|---|
+| torsional friction off, hibernation off | OK |
+| torsional friction **on**, hibernation off | OK |
+| torsional friction off, hibernation **on** | **NaN** |
+| torsional friction on, hibernation on | **NaN** |
+| 400-step settle, **no push** | OK |
+| push, then raw stepping | **NaN at post-step ~1** |
+| push, then `update_material_state()` (the real pipeline path) | **NaN** |
+| push, then lift the plate clear, then settle | **NaN** |
+| same, n=200 | **NaN** |
+
+So it is not an interaction with torsional friction, not a slow accumulation,
+and not specific to a particle count: a settle alone is fine, and the failure
+appears immediately once a settle *follows a push*.
+
+A plausible mechanism, not confirmed: the sweep loop calls `set_dofs_position`
+on the plate every step (the horizontal DOF fix), and that wakes entities. Once
+the sweep ends those calls stop, the plate becomes eligible to hibernate while
+still under PD control and still in contact, and the constraint forces
+degenerate. That would also explain why `probe_contact_islands.py` measured
+hibernation successfully — it times push steps and never runs a post-push
+settle.
+
+**Consequence: the 57x is unattainable.** Every transition in this pipeline ends
+with a post-push settle, which is exactly the case that fails. Worth reporting
+upstream, and worth re-testing on a later release; until then `use_hibernation`
+must stay `False`. It also casts the 0.4.5 hibernation result in a different
+light — that code path has been fragile across at least two releases.
+
+**The remaining CG numbers are speed only and must not be acted on yet.** Hibernation
 records 770 contact points against the baseline's 1053, i.e. it is solving a
 different contact set by construction, and freezing bodies that should still be
 moving is exactly the failure mode measured on 0.4.5. Re-run

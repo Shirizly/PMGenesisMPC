@@ -292,24 +292,43 @@ class SandboxManipulation:
                 f"solver; expected one of "
                 f"{[n for n in dir(gs.constraint_solver) if not n.startswith('_')]}"
             ) from e
+        # Defaults this class insists on, then EVERY other key the config sets is
+        # forwarded, and an unrecognized one raises.
+        #
+        # Previously this was a fixed list of `rigid_cfg.get(...)` calls, so any
+        # option not on the list was silently dropped: writing
+        # `enable_torsional_friction: True` in basic.yaml would have done exactly
+        # nothing, with no error and no warning. That is the same failure mode
+        # `safety_margin` had (declared 0.005, hardcoded 0.02, never read), and
+        # it is worth removing structurally rather than one key at a time — a
+        # config that lies about what the simulation is doing is far worse than
+        # one that fails loudly.
+        _rigid_kwargs = {
+            "iterations": 50, "ls_iterations": 50,
+            "tolerance": 1e-6, "ls_tolerance": 0.01,
+            "box_box_detection": False, "use_contact_island": False,
+            "use_hibernation": False, "enable_multi_contact": True,
+            "max_collision_pairs": self._default_max_collision_pairs(),
+        }
+        _known = set(gs.options.RigidOptions.model_fields)
+        _unknown = sorted(set(rigid_cfg) - _known - {"constraint_solver"})
+        if _unknown:
+            raise ValueError(
+                f"rigid_options key(s) {_unknown} are not accepted by this "
+                f"Genesis version's RigidOptions. Either the key is misspelled "
+                f"or it was removed upstream (e.g. hibernation_thresh_acc and "
+                f"prefer_parallel_linesearch were removed in Genesis 1.2.x). "
+                f"Accepted: {sorted(_known)}")
+        _rigid_kwargs.update(
+            {k: v for k, v in rigid_cfg.items() if k != "constraint_solver"})
+        _rigid_kwargs["constraint_solver"] = _constraint_solver
+
         self._scene = gs.Scene(
             sim_options=gs.options.SimOptions(
                 dt       = self._config["simulation"].get('dt', 4e-3),
                 substeps = self._config["simulation"].get('substeps', 5),
             ),
-            rigid_options=gs.options.RigidOptions(
-                iterations=rigid_cfg.get("iterations", 50),
-                ls_iterations=rigid_cfg.get("ls_iterations", 50),
-                tolerance=rigid_cfg.get("tolerance", 1e-6),
-                ls_tolerance=rigid_cfg.get("ls_tolerance", 0.01),
-                box_box_detection=rigid_cfg.get("box_box_detection", False),
-                use_contact_island=rigid_cfg.get("use_contact_island", False),
-                use_hibernation=rigid_cfg.get("use_hibernation", False),
-                max_collision_pairs=rigid_cfg.get(
-                    "max_collision_pairs", self._default_max_collision_pairs()),
-                enable_multi_contact=rigid_cfg.get("enable_multi_contact", True),
-                constraint_solver=_constraint_solver,
-            ),
+            rigid_options=gs.options.RigidOptions(**_rigid_kwargs),
             viewer_options = viewer_options,
             vis_options=gs.options.VisOptions(
                 show_link_frame=self._debug and self._viewer_type == "observer",

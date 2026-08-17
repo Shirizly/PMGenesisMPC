@@ -1,4 +1,9 @@
-genesis-world==0.4.5
+# 1.3.3 is the "Genesis World" rename of the same package; the import is still
+# `import genesis as gs`. Pinned exactly because `quadrants` (its compiler) is
+# itself pinned with a hard `==` and the two versions cannot coexist, so a float
+# here silently rebuilds the kernel cache. See docs/genesis_world_migration.md
+# for the breaking changes and the rollback recipe to 0.4.5.
+genesis-world==1.3.3
 torch==2.11.0
 torchvision==0.26.0
 numpy-quaternion==2024.0.13 # potentially remove again

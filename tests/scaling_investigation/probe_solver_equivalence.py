@@ -135,6 +135,17 @@ CONFIGS = {
     # solver AND island decomposition. Any difference attributed to CG could
     # equally be caused by running without islands. This isolates that.
     "newton_islands_off": ({"use_contact_island": False}, 0.0),
+    # Genesis >=1.2.x only. Included as a direct test of the upstream claim in
+    # rigid_solver.py that CG "carries a search history that the moving
+    # objective invalidates, leaving friction short" -- with torsional friction
+    # enabled there is MORE friction to leave short, so any deficit should grow.
+    "cg_islands_on": ({"constraint_solver": "CG"}, 0.0),
+    # Torsional friction is ON in basic.yaml as of this branch, so `newton` now
+    # includes it. This turns it back OFF, which is the only way to see what
+    # enabling it actually did: it resists spin about the contact normal, and
+    # for a cube resting on the tray that normal is vertical, so what it really
+    # resists is cubes twisting in place under an off-centre blade hit.
+    "no_torsional": ({"enable_torsional_friction": False}, 0.0),
 }
 
 # name -> (start_xy, stop_xy, yaw). Fixed, not sampled: every configuration must
@@ -351,6 +362,18 @@ def run_cell(n_particles, config_name, action_name, particle_size, library_root,
         post = sim._get_particle_positions()[0, :n_active].clone()
         out["post_positions_mm"] = (post * 1000).tolist()
 
+        # How much of the pile is asleep at s'. The hold test below is the usual
+        # way to tell real rest from faked rest, but it is BLIND to hibernation
+        # by construction: a frozen body does not drift, so "no drift" no longer
+        # proves "at rest", it may just mean "still frozen". Bulk transport
+        # becomes the real detector, and this number says how much of the pile
+        # was excluded from the solve when s' was recorded.
+        try:
+            hib = sim._scene.rigid_solver.dyn_state.links.is_hibernated.to_numpy()
+            out["hibernated_links"] = int(hib.reshape(hib.shape[0], -1)[:, 0].sum())
+        except Exception:
+            out["hibernated_links"] = None
+
         for _ in range(HOLD_STEPS):
             sim._step_scene()
         held = sim._get_particle_positions()[0, :n_active]
@@ -462,7 +485,7 @@ def distribution_table(cells):
                               ("pen_particle_max_mm", "penetration mm")):
             rm, rh, rn = interval(ref, metric)
             line = f"    {label:<16} newton {rm:8.2f} +/-{rh:6.2f} (n={rn})"
-            for cfg in ("cg", "cg_iter30", "hibernation"):
+            for cfg in _candidates(runs, n):
                 rs = runs.get((n, action, cfg))
                 if not rs:
                     continue
@@ -474,6 +497,19 @@ def distribution_table(cells):
 
 
 REL_TOL = 0.02          # 2 % of the reference value
+
+# The reference and the two known-identical replicas that define the noise
+# floor; everything else present in a run is a candidate to be judged.
+_FLOOR_CONFIGS = ("newton", "newton_repeat", "newton_eps")
+
+
+def _candidates(keyed, n):
+    """Configs actually present for this particle count, minus the reference and
+    its noise-floor replicas. Derived from the data rather than hardcoded: an
+    earlier version listed the candidates literally and silently omitted every
+    config added afterwards from the report, having measured them all."""
+    return [c for c in dict.fromkeys(k[2] for k in keyed if k[0] == n)
+            if c not in _FLOOR_CONFIGS]
 
 
 def verdict_table(by, keys):
@@ -524,7 +560,7 @@ def verdict_table(by, keys):
         print("#" * 100)
         print(f"{'config':<14}{'action':<11}{'dCOM %':>9}{'dDispl %':>10}"
               f"{'dPen mm':>10}{'hold mm':>9}  verdict")
-        for cfg in ("cg", "cg_iter30", "hibernation"):
+        for cfg in _candidates(by, n):
             for a in actions:
                 ref, c = by.get((n, a, "newton")), by.get((n, a, cfg))
                 if not ref or not c:
