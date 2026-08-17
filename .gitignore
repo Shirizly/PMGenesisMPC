@@ -13,6 +13,7 @@ nca_epoch_*.pth
 *.jpg
 *.jpeg
 *.avi
+Genesis/data/dry_run/
 
 # Run artifacts (outputs are reproducible from configs)
 outputs/

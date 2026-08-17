@@ -1103,6 +1103,109 @@ class SandboxManipulation:
             "n_contacts_per_pair": ncp,
         }
 
+    # ------------------------------------------------------------------ #
+    # Reaction loads on the tool
+    # ------------------------------------------------------------------ #
+
+    def _reaction_reset(self) -> None:
+        """Start a fresh reaction record for one action.
+
+        Everything is accumulated as a running max in GPU tensors and read back
+        exactly once, by ``reaction_report()``. That matters: the sweep loop
+        deliberately has no per-step GPU sync (removing the old
+        ``.nonzero()``/``.item()`` calls was part of what made it cheap, see
+        docs/scaling_to_200_objects.md section 1.2), and a per-step ``.item()``
+        here would put one straight back.
+
+        Split by phase, because the phases are not comparable. The descent and
+        lift drive the plate by teleport (``set_pos``) while its PD servo still
+        holds an older target, so the servo commands full force against its own
+        motion: measured, that pins ``force_N`` to the 30 N limit for ~13 % of
+        steps while the actual granular reaction is 0.004 N. Reporting one
+        number over all phases would therefore describe a control artifact and
+        look like a machine at its structural limit. **The sweep figures are the
+        physically meaningful ones.**
+        """
+        z = lambda: torch.zeros(self._n_envs, device=gs.device)
+        def _phase():
+            return {
+                "force_N": z(),      # |actuator force| on x/y/z, per env
+                "torque_Nm": z(),    # |actuator torque| on roll/pitch/yaw
+                "contact_N": z(),    # net granular reaction on the blade
+                "track_mm": z(),     # deviation from the commanded path
+                "tilt_deg": z(),     # blade tilt away from vertical
+                "saturated": z(),    # steps at the force limit
+                "steps": 0,
+            }
+        self._reaction = {ph: _phase() for ph in ("lower", "sweep", "lift")}
+
+    def _reaction_update(self, p_ref=None, phase="sweep") -> None:
+        """Fold one step into the running maxima for ``phase``. No host sync."""
+        all_r = getattr(self, "_reaction", None)
+        if all_r is None or phase not in all_r:
+            return
+        r = all_r[phase]
+        f = self.plate.get_dofs_control_force()          # [n_envs, 6]
+        lin, rot = f[:, :3].abs().amax(dim=1), f[:, 3:].abs().amax(dim=1)
+        r["force_N"] = torch.maximum(r["force_N"], lin)
+        r["torque_Nm"] = torch.maximum(r["torque_Nm"], rot)
+        # A real stepper loses steps rather than pushing harder, so time spent
+        # against the limit is the "would the machine have coped" signal.
+        r["saturated"] += (lin >= 0.99 * self._plate_max_force).to(lin.dtype)
+
+        try:
+            c = self.plate.get_links_net_contact_force().reshape(self._n_envs, -1, 3)
+            r["contact_N"] = torch.maximum(r["contact_N"], c.norm(dim=-1).amax(dim=1))
+        except Exception:
+            pass
+
+        if p_ref is not None:
+            err = (self.plate.get_pos()[:, :2] - p_ref[:, :2]).norm(dim=-1) * 1000.0
+            r["track_mm"] = torch.maximum(r["track_mm"], err)
+
+        # Tilt: angle between the blade's own z axis and world z. Roll and pitch
+        # are held by a per-step write today, so this is ~0 now; it exists
+        # because the redesign (docs/gantry_redesign.md, Q5) replaces that write
+        # with a finite-stiffness servo, and this is the number that says
+        # whether that is acceptable.
+        q = self.plate.get_quat()
+        w, x, y, zq = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        cos_tilt = (1.0 - 2.0 * (x * x + y * y)).clamp(-1.0, 1.0)
+        r["tilt_deg"] = torch.maximum(r["tilt_deg"], cos_tilt.arccos() * 180.0 / math.pi)
+        r["steps"] += 1
+
+    def reaction_report(self) -> dict:
+        """Peak reaction loads on the tool during the last action.
+
+        One host sync, at the end of the action. Intended for setting real-robot
+        limits: ``force_N`` and ``torque_Nm`` are what the actuators had to
+        supply, ``contact_N`` is the granular reaction they were fighting, and
+        ``track_mm`` / ``tilt_deg`` are how far the tool was pushed off its
+        commanded pose regardless. ``saturated_frac`` is the fraction of steps
+        spent against ``plate.max_force`` — above zero means a real machine
+        would have been at its limit and, with steppers, losing position.
+        """
+        all_r = getattr(self, "_reaction", None)
+        if not all_r:
+            return {}
+        out = {"force_limit_N": float(self._plate_max_force)}
+        for phase, r in all_r.items():
+            if not r["steps"]:
+                continue
+            out[phase] = {
+                "force_N": float(r["force_N"].max()),
+                "torque_Nm": float(r["torque_Nm"].max()),
+                "contact_N": float(r["contact_N"].max()),
+                "track_mm": float(r["track_mm"].max()),
+                "tilt_deg": float(r["tilt_deg"].max()),
+                "saturated_frac": float(r["saturated"].max()) / r["steps"],
+                "steps": int(r["steps"]),
+            }
+            if phase == "sweep":
+                out[phase]["per_env_force_N"] = r["force_N"].tolist()
+                out[phase]["per_env_track_mm"] = r["track_mm"].tolist()
+        return out
+
     def escaped_particle_count(self) -> int:
         """Particles outside the tray interior, summed over all envs.
 
@@ -1255,6 +1358,7 @@ class SandboxManipulation:
                 zero_velocity=False,
             )
             self._step_scene()
+            self._reaction_update(p_ref, "sweep")
             if on_step is not None:
                 on_step(step, p_ref, v_ref)
 
@@ -1328,7 +1432,7 @@ class SandboxManipulation:
         return s, torch.clamp(v, min=0.0)
     
     def plate_position_translation(self, p_start, p_end, n_steps: int | None = None,
-                                   on_step=None):
+                                   on_step=None, phase="lower"):
         """
         Move plates with position control across all environments.
 
@@ -1355,6 +1459,7 @@ class SandboxManipulation:
                 dofs_idx_local=self._vertical_dofs_local
             )
             self._step_scene()
+            self._reaction_update(path[i], phase)
             if on_step is not None:
                 on_step(i)
 
@@ -1560,6 +1665,8 @@ class SandboxManipulation:
         Returns:
             Tensor of shape [n_envs] with success status
         """
+        self._reaction_reset()
+
         def _phase_step(phase):
             if on_step is None:
                 return None
@@ -1574,7 +1681,7 @@ class SandboxManipulation:
         lower_start = p_start + self._clearance_offset
         self.plate.set_pos(lower_start, zero_velocity=True)
         self.plate_position_translation(lower_start, p_start, self._clearance_ctrl_steps,
-                                        on_step=_phase_step('lower'))
+                                        on_step=_phase_step('lower'), phase="lower")
         if on_phase is not None:
             on_phase('post_lower')
 
@@ -1595,7 +1702,7 @@ class SandboxManipulation:
         self._vertical_dof_fix[:, 1] = final_pos[:, 1]
         self.plate_position_translation(
             final_pos, final_pos + self._clearance_offset, self._clearance_ctrl_steps,
-            on_step=_phase_step('lift'))
+            on_step=_phase_step('lift'), phase="lift")
         self.plate.set_pos(final_pos + self._lift_height_tensor, zero_velocity=True)
 
         return reached_goal, final_pos
