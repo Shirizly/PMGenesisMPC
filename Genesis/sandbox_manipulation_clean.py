@@ -190,6 +190,19 @@ class SandboxManipulation:
         self._plate_accel       = float(self._plate_params.get("acceleration", 2.0))
         self._plate_bandwidth   = float(self._plate_params.get("control_bandwidth_hz", 15.0))
         self._plate_max_force   = float(self._plate_params.get("max_force", 30.0))
+        # See docs/gantry_redesign.md. "pinned" overwrites the uncommanded dofs
+        # every step; "servo" holds them with stiff PD so nothing is written
+        # mid-step, which is what makes hibernation usable and solver errors
+        # reportable.
+        self._plate_hold_mode = str(self._plate_params.get("hold_mode", "pinned"))
+        if self._plate_hold_mode not in ("pinned", "servo"):
+            raise ValueError(f"plate.hold_mode must be 'pinned' or 'servo', "
+                             f"got {self._plate_hold_mode!r}")
+        self._plate_orientation_inertia = float(
+            self._plate_params.get("orientation_inertia", 2.0e-4))
+        self._plate_orientation_bandwidth = float(
+            self._plate_params.get("orientation_bandwidth_hz", 30.0))
+        self._plate_max_torque = float(self._plate_params.get("max_torque", 2.0))
         # Extra steps after the reference reaches the goal, letting the servo
         # close its remaining tracking error before the sweep is judged.
         self._sweep_settle_steps = int(self._sim_params.get("sweep_settle_steps", 12))
@@ -592,6 +605,21 @@ class SandboxManipulation:
         self.plate.set_dofs_force_range(
             (-self._plate_max_force,) * 3, (self._plate_max_force,) * 3,
             translational)
+
+        if self._plate_hold_mode == "servo":
+            # Orientation gets its own axis model rather than being overwritten.
+            # Inertia, not mass: the reflected inertia of the rotary drive, from
+            # which gains follow exactly as for the linear axes. Deliberately
+            # stiffer -- this axis holds a setpoint, it does not track a profile.
+            rotational = [3, 4, 5]
+            inertia = self._plate_orientation_inertia
+            omega_r = 2.0 * math.pi * self._plate_orientation_bandwidth
+            self.plate.set_dofs_armature((inertia,) * 3, rotational)
+            self.plate.set_dofs_kp((inertia * omega_r ** 2,) * 3, rotational)
+            self.plate.set_dofs_kv((2.0 * inertia * omega_r,) * 3, rotational)
+            self.plate.set_dofs_force_range(
+                (-self._plate_max_torque,) * 3, (self._plate_max_torque,) * 3,
+                rotational)
 
     def _cache_particle_idx(self):
         links_idx = []
@@ -1346,17 +1374,32 @@ class SandboxManipulation:
             self.plate.control_dofs_position_velocity(
                 p_ref, v_ref, dofs_idx_local=[0, 1, 2])
 
-            # zero_velocity=False: this call constrains z/roll/pitch/yaw only,
-            # but RigidEntity.set_dofs_position defaults zero_velocity=True and
-            # zeroes *all six* dofs regardless of dofs_idx_local. Leaving the
-            # default on reset the plate's x/y velocity every single step, so
-            # the sweep restarted from rest at 250 Hz and the tool carried no
-            # momentum into the pile.
-            self.plate.set_dofs_position(
-                self._horizontal_dof_fix,
-                dofs_idx_local=self._horizontal_dofs_local,
-                zero_velocity=False,
-            )
+            if self._plate_hold_mode == "servo":
+                # Hold z and orientation with their own servos. A control target
+                # is a request, not a state write: it does not reset the
+                # collider or the constraint warm start, does not clear _errno,
+                # and does not break hibernation -- unlike set_dofs_position,
+                # which does all three (docs/gantry_redesign.md section 1).
+                # Set once per sweep, not per step: ctrl targets persist.
+                # Orientation only: z is dof 2, already carried by the
+                # trapezoid target on [0,1,2] above, so commanding it again here
+                # would set two targets for one axis.
+                # _horizontal_dof_fix columns are [z, roll, pitch, yaw].
+                if step == 0:
+                    self.plate.control_dofs_position(
+                        self._horizontal_dof_fix[:, 1:], dofs_idx_local=[3, 4, 5])
+            else:
+                # zero_velocity=False: this call constrains z/roll/pitch/yaw only,
+                # but RigidEntity.set_dofs_position defaults zero_velocity=True and
+                # zeroes *all six* dofs regardless of dofs_idx_local. Leaving the
+                # default on reset the plate's x/y velocity every single step, so
+                # the sweep restarted from rest at 250 Hz and the tool carried no
+                # momentum into the pile.
+                self.plate.set_dofs_position(
+                    self._horizontal_dof_fix,
+                    dofs_idx_local=self._horizontal_dofs_local,
+                    zero_velocity=False,
+                )
             self._step_scene()
             self._reaction_update(p_ref, "sweep")
             if on_step is not None:
@@ -1451,13 +1494,31 @@ class SandboxManipulation:
                       else torch.linspace(0, 1, n, device=gs.device))
         path = (1 - steps_0to1[:, None, None]) * p_start[None, :, :] + steps_0to1[:, None, None] * p_end[None, :, :]
 
-        self.plate.set_pos(p_start)
+        if self._plate_hold_mode == "servo":
+            # Drive the move with the servo instead of teleporting. The old path
+            # wrote the pose with set_pos every step while the PD servo still
+            # held an older target, so the servo fought its own motion: measured,
+            # that pinned the actuator at its 30 N limit for 100 % of descent
+            # steps while the real granular reaction was 0.02 N. Feeding the
+            # interpolated path as a TARGET removes both the fight and the
+            # per-step state write.
+            # _vertical_dofs_local is [0,1,3,4,5] -- x, y, roll, pitch, yaw --
+            # so _vertical_dof_fix columns are [x, y, roll, pitch, yaw] and the
+            # orientation part is columns 2: onward. x/y/z all come from the
+            # interpolated path below.
+            self.plate.control_dofs_position(
+                self._vertical_dof_fix[:, 2:], dofs_idx_local=[3, 4, 5])
+        else:
+            self.plate.set_pos(p_start)
         for i in range(n):
-            self.plate.set_pos(pos=path[i])
-            self.plate.set_dofs_position(
-                position=self._vertical_dof_fix,
-                dofs_idx_local=self._vertical_dofs_local
-            )
+            if self._plate_hold_mode == "servo":
+                self.plate.control_dofs_position(path[i], dofs_idx_local=[0, 1, 2])
+            else:
+                self.plate.set_pos(pos=path[i])
+                self.plate.set_dofs_position(
+                    position=self._vertical_dof_fix,
+                    dofs_idx_local=self._vertical_dofs_local
+                )
             self._step_scene()
             self._reaction_update(path[i], phase)
             if on_step is not None:

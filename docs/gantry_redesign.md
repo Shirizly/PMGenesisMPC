@@ -143,12 +143,24 @@ change; see Q5.**
 
 ### Expected benefits
 
-1. Hibernation becomes usable → up to 57x on pushes (to be re-measured).
+1. Hibernation becomes usable. **The 57x figure is retracted — see §8; the real
+   figure is 1.56x on the push.**
 2. Solver errors become visible for the first time.
-3. The per-step collider/constraint reset disappears from the sweep. §1.3
-   measured 25 % saved per step when this was removed from the settle, so the
-   push may get materially cheaper **even with hibernation off**.
+3. ~~The per-step collider/constraint reset disappears from the sweep, so the
+   push may get cheaper even with hibernation off.~~ **Refuted by Q7: servo is
+   15 % slower on the push and 48 % slower on the settle.**
 4. One control path instead of two (kinematic teleport vs PD servo).
+5. **The reaction report becomes trustworthy.** In pinned mode the descent
+   reports 30.00 N at 100 % saturation, which is the teleport fighting a stale
+   servo target, not load. Since the whole point of that report is to set
+   real-robot limits, a phase that reports a permanent structural-limit hit is
+   worse than no number at all.
+
+Note one asymmetry worth remembering: servo mode *reduces* the largest island
+(61 -> 48 entities) yet costs more per step. Island size counts links, and the
+plate is one link either way — but in pinned mode its dofs are hard-set and so
+effectively absent from the solve, whereas in servo mode all six participate. The
+dense block is priced in DOFs, not entities.
 
 ---
 
@@ -160,10 +172,10 @@ change; see Q5.**
 | Q2 | Do `set_dofs_armature`, `set_dofs_kp/kv`, `set_dofs_force_range`, `control_dofs_position_velocity` work on prismatic DOFs of an MJCF chain? | The gantry actuator model must survive | **OPEN** |
 | Q3 | With DOFs parsed depth-first (1.2.0), is the order really `[x, y, z, yaw]`? | Wrong order silently drives the wrong axis | **OPEN** |
 | Q4 | Is a **one-off** `set_dofs_position` safe under hibernation, or does it NaN like the per-step case? | If even one-off writes fail, the approach-to-clearance teleport must become a PD move too, and hibernation may still be unreachable | **ANSWERED: one-off is safe, PD-driven is safe, only PER-STEP writes NaN. See §8. Changes the design — see option B.** |
-| Q5 | With finite z / roll / pitch / yaw stiffness, how far does the blade actually deviate under a 200-cube push? | If it rides up over cubes or tilts, the tool no longer shears the pile at a controlled depth | **OPEN — now the gating question, and the reaction report (§9) is the instrument for it** |
+| Q5 | With finite z / roll / pitch / yaw stiffness, how far does the blade actually deviate under a 200-cube push? | If it rides up over cubes or tilts, the tool no longer shears the pile at a controlled depth | **PASSED. n=200: tilt 0.0000°, tracking error 0.343 mm vs 0.344 pinned, final error 0.008 mm, reached_goal True.** |
 | Q6 | Does a 4-DOF chain change contact behaviour vs a free body with 2 DOFs pinned? | Datasets would differ for a second reason beyond torsional friction | **OPEN** |
-| Q7 | Is the push actually cheaper once the per-step reset is gone (hibernation off)? | The benefit in §3.3 is inferred from the settle, not measured for the sweep | **OPEN** |
-| Q8 | Does hibernation then pass `probe_solver_equivalence.py`? | A 57x speedup is worthless if the physics differs — the standing rule from §8.8 | **OPEN** |
+| Q7 | Is the push actually cheaper once the per-step reset is gone (hibernation off)? | The benefit in §3.3 is inferred from the settle, not measured for the sweep | **REFUTED. Servo is SLOWER: push 820.9 s vs 716.1 s (+15 %), settle 172.4 s vs 116.1 s (+48 %) at n=200.** |
+| Q8 | Does hibernation then pass `probe_solver_equivalence.py`? | A speedup is worthless if the physics differs — the standing rule from §8.8 | **OPEN — and now worth much less, see §8** |
 
 Q4 is the one to test first, because it is cheap and it gates the value of
 everything else.
@@ -212,10 +224,61 @@ The design is done when all of these pass on 1.3.3:
 
 ---
 
+## 7b. Recommendation
+
+Two defensible configurations:
+
+| config | per transition at n=200 | correctness |
+|---|---|---|
+| `pinned`, no hibernation (today) | 832 s | errors unreportable; descent reports a false 30 N limit hit |
+| `servo`, no hibernation | ~1060 s (1.28x slower) | correct |
+| **`servo` + hibernation** | **708 s (1.18x faster)** | correct, **pending Q8** |
+
+So `servo` + hibernation is both faster and correct, and is the target — but it
+is gated on Q8, since §8.8's rule is that a speedup means nothing until the
+physics is shown equivalent. `servo` alone buys correctness for ~28 % more time.
+`hold_mode` stays `pinned` until Q8 is answered.
+
+---
+
 ## 8. Status log
 
 Newest first. Every entry is a test result, including the ones that force a
 design change.
+
+- **RETRACTION: the 57x hibernation speedup was measured on a broken
+  simulation.** `probe_contact_islands.py` measured hibernation in *pinned*
+  mode, which was later proved to produce NaN constraint forces — and because
+  `set_dofs_position` clears `_errno` every step, it never raised. Its 62 ms/step
+  and largest-island-7 figures therefore came from a run silently producing NaN.
+  Re-measured in servo mode with `errno` verified 0 at n=200: push 820.9 s
+  without hibernation, 527.0 s with, i.e. **1.56x on the push**, and 1.18x per
+  whole transition against the pinned baseline (832 s -> 708 s) because the
+  settle gets slower. The island sizes explain it: in a *valid* simulation
+  hibernation takes the largest island from **48 to 43** (10 %), not from 61 to 7
+  (87 %). And (48/43)^2.64 = 1.34 against 1.56x measured, so the island^2.64 law
+  from `scaling_to_200_objects.md` section 8.7 holds — hibernation simply has
+  little to sleep, because the contact-connected neighbourhood of a ploughing
+  blade is by definition awake. This is the general hazard of §1.1: any measurement taken
+  while per-step DOF writes are suppressing the error flag may be measuring a
+  simulation that has already failed.
+
+- **Q5 PASSED, Q7 REFUTED — option B implemented behind `plate.hold_mode`.**
+  `servo` mode gives, at n=200, `errno` 0 throughout, `reached_goal` True, final
+  error 0.008 mm, tilt **0.0000°** and tracking error 0.343 mm against 0.344 mm
+  pinned — so stiff servos hold the blade exactly as well as hard pinning, and
+  Q5 is settled. But the hoped-for speedup is not there: servo is 15 % slower on
+  the push and 48 % slower on the settle. Most likely because roll/pitch/yaw are
+  now genuine dynamic DOFs inside the constraint solve rather than hard-set, so
+  the plate contributes more to its island's dense Hessian — which is exactly
+  what the island^2.64 law predicts.
+
+  So the redesign's value is **correctness, not throughput**:
+    1. solver errors become reportable at all (`errno` readable, verified 0),
+    2. the descent stops saturating the actuator — 30.00 N at 100 % of steps
+       becomes 1.04 N at 0 %, which was a pure control artifact,
+    3. hibernation becomes usable (worth 1.56x on the push, not 57x).
+  `hold_mode` defaults to `pinned` so nothing changes until this is decided.
 
 - **Q4 ANSWERED — design changed.** Standalone 2-cube scene, hibernation on,
   identical descent: per-step `set_dofs_position` → NaN; **one-off**
