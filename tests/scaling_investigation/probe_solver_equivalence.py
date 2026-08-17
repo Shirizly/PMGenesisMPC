@@ -146,6 +146,10 @@ CONFIGS = {
     # for a cube resting on the tray that normal is vertical, so what it really
     # resists is cubes twisting in place under an off-centre blade hit.
     "no_torsional": ({"enable_torsional_friction": False}, 0.0),
+    # The plate redesign itself, as a candidate to be judged against the
+    # reference rather than swapped in blind. Overrides plate.hold_mode, not
+    # rigid_options -- see PLATE_OVERRIDES.
+    "servo_plate": ({}, 0.0),
 }
 
 # name -> (start_xy, stop_xy, yaw). Fixed, not sampled: every configuration must
@@ -158,12 +162,19 @@ ACTIONS = {
     "diagonal":  ((-0.025, -0.025), (0.025, 0.025), math.pi / 4),
 }
 
+# config name -> plate:{} overrides, for candidates that change the tool model
+# rather than the solver.
+PLATE_OVERRIDES = {"servo_plate": {"hold_mode": "servo"}}
+
 PRE_SETTLE_STEPS = 50     # fixed, identical across configs
 POST_SETTLE_STEPS = 300   # fixed, identical across configs
 HOLD_STEPS = 50           # after the fixed settle, to catch faked rest
 
 
-def _config(n_particles, particle_size, overrides):
+_config_name = [""]      # set by run_cell; keeps _config's signature stable
+
+
+def _config(n_particles, particle_size, overrides, hold_mode=None):
     with open(GENESIS_DIR / "configs" / "basic.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["material"].update(shape="cube", particle_size=particle_size,
@@ -171,6 +182,15 @@ def _config(n_particles, particle_size, overrides):
     cfg["box"]["friction"] = 0.3
     cfg.setdefault("data_collection", {})["record_transitions"] = False
     cfg.setdefault("rigid_options", {}).update(overrides)
+    for k, v in PLATE_OVERRIDES.get(_config_name[0], {}).items():
+        cfg.setdefault("plate", {})[k] = v
+    if hold_mode:
+        # Applied to EVERY config in the run, including the reference and the
+        # noise-floor replicas. hold_mode is not the variable under test here --
+        # it is the platform the test runs on, and hibernation cannot run on
+        # `pinned` at all (it NaNs), so a comparison that left the reference
+        # pinned would be comparing two different plate models at once.
+        cfg.setdefault("plate", {})["hold_mode"] = hold_mode
     return cfg
 
 
@@ -246,7 +266,7 @@ def contact_quality(sim, classes):
 
 
 def run_cell(n_particles, config_name, action_name, particle_size, library_root,
-             library_index):
+             library_index, hold_mode=None):
     import numpy as np
     import torch
     from Genesis.sandbox_manipulation_clean import SandboxManipulation
@@ -259,8 +279,10 @@ def run_cell(n_particles, config_name, action_name, particle_size, library_root,
     out = {"n_particles": n_particles, "config": config_name,
            "action": action_name, "overrides": overrides, "perturb_m": perturb}
 
+    out["hold_mode"] = hold_mode
+    _config_name[0] = config_name
     sim = SandboxManipulation(
-        config=_config(n_particles, particle_size, overrides),
+        config=_config(n_particles, particle_size, overrides, hold_mode),
         n_envs=1, debug=False)
     sim.build()
 
@@ -595,6 +617,10 @@ def parse_args():
     p.add_argument("--library-root", default="data/dry_run")
     p.add_argument("--library-index", type=int, default=0)
     p.add_argument("--out", default=None)
+    p.add_argument("--hold-mode", choices=["pinned", "servo"], default=None,
+                   help="plate.hold_mode for EVERY config in the run. Required "
+                        "as 'servo' to test hibernation at all, since "
+                        "hibernation produces NaN under 'pinned'.")
     p.add_argument("--replicates", type=int, default=1,
                    help="run each configuration N times. Genesis is not "
                         "bit-deterministic, so a single run per cell is one "
@@ -619,7 +645,7 @@ def main():
     if args.cell:
         n, cfg, action, rep = args.cell.split(":")
         res = run_cell(int(n), cfg, action, args.particle_size,
-                       args.library_root, args.library_index)
+                       args.library_root, args.library_index, args.hold_mode)
         res["replicate"] = int(rep)
         print("__RESULT__" + json.dumps(res))
         return
@@ -638,7 +664,8 @@ def main():
                      "tests.scaling_investigation.probe_solver_equivalence",
                      "--cell", cell, "--particle-size", str(args.particle_size),
                      "--library-root", args.library_root,
-                     "--library-index", str(args.library_index)],
+                     "--library-index", str(args.library_index)]
+                    + (["--hold-mode", args.hold_mode] if args.hold_mode else []),
                     cwd=REPO_ROOT, capture_output=True, text=True)
                 line = next((l for l in proc.stdout.splitlines()
                              if l.startswith("__RESULT__")), None)

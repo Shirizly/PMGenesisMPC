@@ -1,6 +1,10 @@
 # Pusher plate redesign: from a pinned free body to a real gantry
 
-**Status: DESIGN — nothing implemented yet.** This is a living document. Every
+**Status: IMPLEMENTED AND REJECTED.** Option B is built and available behind
+`plate.hold_mode: servo`, but it fails the equivalence gate and is **not**
+adopted; `pinned` remains the default. Both original motivations died under
+measurement — hibernation on physics, the speedup on timing. Read §7b for the
+bottom line before anything else. This is a living document. Every
 open question below is resolved by a test, and the answer is written back here,
 including answers that kill part of the design. When the design passes the
 acceptance checks in §7 this document describes what was built, not what was
@@ -175,7 +179,7 @@ dense block is priced in DOFs, not entities.
 | Q5 | With finite z / roll / pitch / yaw stiffness, how far does the blade actually deviate under a 200-cube push? | If it rides up over cubes or tilts, the tool no longer shears the pile at a controlled depth | **PASSED. n=200: tilt 0.0000°, tracking error 0.343 mm vs 0.344 pinned, final error 0.008 mm, reached_goal True.** |
 | Q6 | Does a 4-DOF chain change contact behaviour vs a free body with 2 DOFs pinned? | Datasets would differ for a second reason beyond torsional friction | **OPEN** |
 | Q7 | Is the push actually cheaper once the per-step reset is gone (hibernation off)? | The benefit in §3.3 is inferred from the settle, not measured for the sweep | **REFUTED. Servo is SLOWER: push 820.9 s vs 716.1 s (+15 %), settle 172.4 s vs 116.1 s (+48 %) at n=200.** |
-| Q8 | Does hibernation then pass `probe_solver_equivalence.py`? | A speedup is worthless if the physics differs — the standing rule from §8.8 | **OPEN — and now worth much less, see §8** |
+| Q8 | Does hibernation then pass `probe_solver_equivalence.py`? | A speedup is worthless if the physics differs — the standing rule from §8.8 | **FAILED. n=100 broadside: penetration 1.95 vs 1.61 mm (+21 % worse), COM −3.1 %, zero variance over 4 replicates. Hibernation rejected.** |
 
 Q4 is the one to test first, because it is cheap and it gates the value of
 everything else.
@@ -211,7 +215,8 @@ this branch. Both should land before any long collection, not after.
 
 ## 7. Acceptance checks
 
-The design is done when all of these pass on 1.3.3:
+**Not met — the design is rejected, see §7b.** The equivalence check is the one
+that failed; the rest were not run once that was decided.
 
 - [ ] `pytest tests/ -q` — 133 passing
 - [ ] `verify_fixes.py` — 12/12, in particular plate cruise speed ≈124 mm/s and sweep tracking ≤0.01 mm
@@ -232,12 +237,44 @@ Two defensible configurations:
 |---|---|---|
 | `pinned`, no hibernation (today) | 832 s | errors unreportable; descent reports a false 30 N limit hit |
 | `servo`, no hibernation | ~1060 s (1.28x slower) | correct |
-| **`servo` + hibernation** | **708 s (1.18x faster)** | correct, **pending Q8** |
+| ~~`servo` + hibernation~~ | ~~708 s~~ | **REJECTED — Q8 failed** |
 
-So `servo` + hibernation is both faster and correct, and is the target — but it
-is gated on Q8, since §8.8's rule is that a speedup means nothing until the
-physics is shown equivalent. `servo` alone buys correctness for ~28 % more time.
-`hold_mode` stays `pinned` until Q8 is answered.
+**Both rows lost.** Q8 killed hibernation on physics, and `servo` itself then
+failed the same equivalence gate: particle-particle penetration 3–6x higher than
+`pinned` at n=100, in both actions, with COM up to 20 % different. So the
+recommendation is to **keep `pinned` and not adopt the redesign**. `hold_mode`
+stays as a flag for future work.
+
+One caveat worth keeping, because it cuts the other way: `pinned`'s low
+penetration may partly be an artifact of `set_dofs_position` calling
+`collider.reset()` every step, so contacts never persist long enough to
+accumulate. That would mean `pinned` flatters itself on exactly the metric used
+to judge it. Deciding which mode is *right* — rather than which differs — needs
+a reference the simulator cannot provide, i.e. physical measurement of a real
+push. Until then the conservative choice is the one every existing dataset was
+collected under.
+
+Superseded: ~~**`servo` buys correctness for ~28 % more time.**~~ Whether that is worth it
+depends on whether a trustworthy reaction report and reportable solver errors
+matter more than throughput at n=200, which is a judgement about the project,
+not about the simulator.
+
+What `servo` buys, concretely:
+
+1. Solver errors become reportable at all. Under `pinned`, `set_dofs_position`
+   clears `_errno` before every step and `Simulator.step` only reads it every
+   second step, so NaN and buffer overflow during a push are structurally
+   invisible. That is not hypothetical: it is what hid the hibernation NaN, and
+   what made the 57x measurement look valid.
+2. The reaction report stops lying about the descent. `pinned` reports 30.00 N at
+   100 % saturation there — the teleport fighting a stale servo target, not load.
+   `servo` reports 1.04 N at 0 %. Since the report exists to set real-robot
+   limits, a phase that always claims a structural-limit hit is worse than no
+   number.
+3. It is closer to the machine: a leadscrew and a held rotary axis are stiff,
+   not infinitely rigid.
+
+What it costs: 15 % on the push, 48 % on the settle, ~28 % per transition.
 
 ---
 
@@ -245,6 +282,64 @@ physics is shown equivalent. `servo` alone buys correctness for ~28 % more time.
 
 Newest first. Every entry is a test result, including the ones that force a
 design change.
+
+- **FINAL: redesign rejected, `pinned` kept.** With hibernation rejected (Q8)
+  and the speedup refuted (Q7), servo's only remaining argument was correctness
+  — and it fails equivalence itself, by a wider margin than hibernation did.
+  What the work leaves behind that is worth keeping: the standalone Genesis bug
+  reproduction, the finding that `set_dofs_position` makes solver errors
+  unreportable (and the audit showing no error was actually being hidden in the
+  shipped config), the reaction report, and the retraction of the 57x.
+
+- **Servo-vs-pinned equivalence FAILED, diagnosed to an implementation bug, fixed.**
+  First run at n=100 showed servo differing on everything, worst of all
+  particle-particle penetration: 0.47 -> 1.61 mm broadside and 0.45 -> 2.93 mm
+  offset, up to 6.5x, plus COM -19.9 % on offset. That is far worse than
+  hibernation managed and did not look like compliance, since blade tilt was
+  still 0.0000 deg.
+
+  Diagnosis: blade z **during the sweep** was identical in both modes
+  (0.0175 m, min = mean = max), so it was not riding at the wrong depth. But the
+  descent ended at 0.0196 m in servo mode against 0.0180 m pinned — 2.1 mm
+  short — because a PD servo trailing a moving ramp lags by about `v*tau`
+  (0.5 m/s x 10.6 ms ~ 5 mm, the right order). `plate_velocity_translation` then
+  called `set_pos(p_start)`, teleporting the blade those 2.1 mm straight down
+  into the pile in one step. The pile was being *punched*, not swept.
+
+  Two fixes: hold the final descent target for `plate.arrival_steps` (12,
+  ~4 time constants) so the servo actually arrives, and skip the start-of-sweep
+  teleport in servo mode, where the descent has already placed the blade under
+  its own actuator. The descent now converges to **0.069 mm** of target, better
+  than pinned's 0.498 mm.
+
+  **The fix did not rescue equivalence.** Re-run at n=100: penetration still
+  0.47 -> 1.74 mm broadside and 0.47 -> 2.94 mm offset, essentially unchanged.
+  Nor is it a gain-tuning problem — at n=50, pinned gives 0.366 mm against servo
+  1.286 mm at 15/30 Hz, **2.341 mm at 60/120 Hz and 1.779 mm at 200/400 Hz**:
+  stiffer is not better and the response is not even monotonic. The two modes
+  simply produce different contact states.
+
+  Worth noting the shape of this: the failure was not in the physics of holding
+  the tool with a servo, which Q5 showed is fine. It was that replacing a
+  teleport with an actuator makes *arrival* something that has to be waited for
+  rather than assumed, and one leftover teleport then undid it.
+
+- **Q8 FAILED — hibernation rejected.** With the plate in `servo` mode (the only
+  mode where hibernation runs at all) and `errno` verified 0, judged by §8.8's
+  criterion at n=100 over 4 replicates: `broadside` shows penetration **1.95 vs
+  1.61 mm, 21 % worse**, and COM 3.76 vs 3.88 mm, −3.1 %. `offset` passes. Every
+  hibernation metric has **exactly zero variance** across replicates — freezing
+  bodies suppresses the chaotic divergence — so these are systematic, not noise.
+  Penetration getting worse is the decisive one: it is the primary metric
+  precisely because it describes the state rather than the trajectory, and
+  bodies sinking further into each other is what excluding part of the contact
+  graph from the solve does.
+
+  Note this is the **same signature** as the 0.4.5 hibernation result (−4 %
+  transport there, −3.1 % here). That was attributed to the PR #2930 wake-up
+  bug; on 1.3.3 with the bug fixed the bias persists, so it was never only the
+  bug. Against a 21 % penetration degradation, 1.56x on the push was never a
+  strong enough reason.
 
 - **RETRACTION: the 57x hibernation speedup was measured on a broken
   simulation.** `probe_contact_islands.py` measured hibernation in *pinned*

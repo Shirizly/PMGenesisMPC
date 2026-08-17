@@ -203,6 +203,8 @@ class SandboxManipulation:
         self._plate_orientation_bandwidth = float(
             self._plate_params.get("orientation_bandwidth_hz", 30.0))
         self._plate_max_torque = float(self._plate_params.get("max_torque", 2.0))
+        self._plate_arrival_steps = int(
+            self._plate_params.get("arrival_steps", 12))
         # Extra steps after the reference reaches the goal, letting the servo
         # close its remaining tracking error before the sweep is judged.
         self._sweep_settle_steps = int(self._sim_params.get("sweep_settle_steps", 12))
@@ -1358,7 +1360,11 @@ class SandboxManipulation:
             1, math.ceil(float(prof["duration"].max().item()) / dt)
         ) + self._sweep_settle_steps
 
-        self.plate.set_pos(p_start)
+        if self._plate_hold_mode != "servo":
+            # In servo mode the descent has already brought the blade here under
+            # its own actuator; teleporting would undo that and, if the descent
+            # had not converged, insert the blade into the pile in one step.
+            self.plate.set_pos(p_start)
 
         for step in range(sweep_steps):
             # Feed the servo a *moving* reference: where the tool should be and
@@ -1513,6 +1519,7 @@ class SandboxManipulation:
         for i in range(n):
             if self._plate_hold_mode == "servo":
                 self.plate.control_dofs_position(path[i], dofs_idx_local=[0, 1, 2])
+                _servo_settle = True
             else:
                 self.plate.set_pos(pos=path[i])
                 self.plate.set_dofs_position(
@@ -1523,6 +1530,19 @@ class SandboxManipulation:
             self._reaction_update(path[i], phase)
             if on_step is not None:
                 on_step(i)
+
+        if self._plate_hold_mode == "servo":
+            # A PD servo trailing a moving ramp lags by ~v*tau: at 0.5 m/s and
+            # tau = 1/omega = 10.6 ms that is ~5 mm, and measured the descent
+            # ended 2.1 mm high. The sweep then teleported the blade that 2.1 mm
+            # straight down into the pile, which showed up as a 6.5x jump in
+            # particle-particle penetration. Holding the final target lets the
+            # servo arrive before anything else happens; ~4 time constants takes
+            # the residual under 2 % of the lag.
+            for _ in range(self._plate_arrival_steps):
+                self.plate.control_dofs_position(path[-1], dofs_idx_local=[0, 1, 2])
+                self._step_scene()
+                self._reaction_update(path[-1], phase)
 
     def generate_action_samples(
             self,
