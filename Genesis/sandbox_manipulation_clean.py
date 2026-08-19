@@ -190,7 +190,7 @@ class SandboxManipulation:
         self._plate_accel       = float(self._plate_params.get("acceleration", 2.0))
         self._plate_bandwidth   = float(self._plate_params.get("control_bandwidth_hz", 15.0))
         self._plate_max_force   = float(self._plate_params.get("max_force", 30.0))
-        # See docs/gantry_redesign.md. "pinned" overwrites the uncommanded dofs
+        # See docs/plate_model.md. "pinned" overwrites the uncommanded dofs
         # every step; "servo" holds them with stiff PD so nothing is written
         # mid-step, which is what makes hibernation usable and solver errors
         # reportable.
@@ -1195,9 +1195,10 @@ class SandboxManipulation:
 
         # Tilt: angle between the blade's own z axis and world z. Roll and pitch
         # are held by a per-step write today, so this is ~0 now; it exists
-        # because the redesign (docs/gantry_redesign.md, Q5) replaces that write
-        # with a finite-stiffness servo, and this is the number that says
-        # whether that is acceptable.
+        # because hold_mode="servo" replaces that write with a finite-stiffness
+        # servo, where the blade can in principle tilt. It stays measured because
+        # it is cheap and it is the number that would catch it.
+        # See docs/plate_model.md section 4.
         q = self.plate.get_quat()
         w, x, y, zq = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
         cos_tilt = (1.0 - 2.0 * (x * x + y * y)).clamp(-1.0, 1.0)
@@ -1385,7 +1386,7 @@ class SandboxManipulation:
                 # is a request, not a state write: it does not reset the
                 # collider or the constraint warm start, does not clear _errno,
                 # and does not break hibernation -- unlike set_dofs_position,
-                # which does all three (docs/gantry_redesign.md section 1).
+                # which does all three (docs/plate_model.md section 5).
                 # Set once per sweep, not per step: ctrl targets persist.
                 # Orientation only: z is dof 2, already carried by the
                 # trapezoid target on [0,1,2] above, so commanding it again here

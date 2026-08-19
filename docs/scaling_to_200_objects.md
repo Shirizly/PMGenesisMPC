@@ -58,6 +58,8 @@ after them is not comparable**.
 
 ### 1.2 The pusher plate is now modelled as a gantry axis
 
+> The tool now has its own reference, **`plate_model.md`** — actuator model, the three phases of a push, and the per-action reaction-load report. This section covers only what changed and why.
+
 The plate is a 2.4 g box — the *lightest* dynamic object in the scene, not a
 heavy one. What previously kept it on course was that z/roll/pitch/yaw were
 hard-set every step and its x/y velocity was zeroed every step.

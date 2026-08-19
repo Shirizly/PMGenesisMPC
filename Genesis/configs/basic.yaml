@@ -122,16 +122,18 @@ plate:
   # How the DOFs the action does not command (z, roll, pitch, yaw) are held.
   #
   #   pinned  overwrite them every step with set_dofs_position. Original
-  #           behaviour. Three costs, all measured: it clears the solver's error
-  #           flag so NaN/overflow during a push is unreportable, it resets the
-  #           constraint warm start every step, and it makes use_hibernation
-  #           produce NaN (57x speedup unreachable).
+  #           behaviour, and the default. Two known costs: it clears the solver's
+  #           error flag, so a NaN or buffer overflow during a push cannot be
+  #           reported (audited -- none is actually occurring), and it resets the
+  #           constraint warm start every step.
   #   servo   hold them with stiff PD instead, so nothing is overwritten
   #           mid-step. This is also what the machine does -- a leadscrew and a
   #           held rotary axis are stiff, not infinitely rigid.
   #
-  # See docs/gantry_redesign.md. Left at `pinned` until Q5 confirms the blade
-  # does not tilt or ride up under a 200-object push.
+  # See docs/plate_model.md. `servo` was built, measured and rejected -- it
+  # fails physics equivalence with 3-6x higher particle penetration
+  # (docs/rejected_plate_servo_redesign.md) -- so `pinned` is the default and
+  # `servo` is kept only for future work.
   hold_mode : pinned
   orientation_inertia : 2.0e-4              # kg m^2, rotary axis reflected inertia
                                             # (~moving_mass * (tool_length/2)^2)

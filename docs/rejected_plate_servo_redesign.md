@@ -1,14 +1,23 @@
-# Pusher plate redesign: from a pinned free body to a real gantry
+# REJECTED: holding the pusher plate with servos instead of per-step writes
 
-**Status: IMPLEMENTED AND REJECTED.** Option B is built and available behind
-`plate.hold_mode: servo`, but it fails the equivalence gate and is **not**
-adopted; `pinned` remains the default. Both original motivations died under
-measurement — hibernation on physics, the speedup on timing. Read §7b for the
-bottom line before anything else. This is a living document. Every
-open question below is resolved by a test, and the answer is written back here,
-including answers that kill part of the design. When the design passes the
-acceptance checks in §7 this document describes what was built, not what was
-intended.
+**This design was implemented, measured, and rejected.** It is kept only as a
+record of why, so the same ground is not covered twice. For the plate model as it
+actually stands, see **`plate_model.md`** — that is the live document; this one
+describes a road not taken.
+
+The code survives behind `plate.hold_mode: servo`, unused and not recommended.
+The default is `pinned`.
+
+**One-paragraph summary.** The plate is a free 6-DOF body whose uncommanded DOFs
+(z, roll, pitch, yaw) are overwritten every step with `set_dofs_position`. That
+has three real costs (§1), so the proposal was to hold those DOFs with stiff PD
+servos instead. Two motivations drove it: it would unblock `use_hibernation`
+(then believed worth 57x) and it might make pushes cheaper by removing a
+per-step constraint-solver reset. **Both died under measurement** — the 57x was
+an artifact of a NaN-producing run, and servo mode is in fact 15-48 % *slower*.
+The remaining argument was correctness, and servo mode then failed the same
+physics-equivalence gate it was meant to satisfy, with 3-6x higher
+particle-particle penetration. §7b has the numbers.
 
 ---
 
@@ -62,23 +71,11 @@ and then fights them.
 
 ---
 
-## 2. Current model, precisely
+## 2. The model this was proposed to replace
 
-| aspect | how it works now |
-|---|---|
-| entity | `scene.add_entity(gs.morphs.Box(size=plate.size))` → free body, 6 DOFs |
-| x, y | PD via `control_dofs_position_velocity` on dofs `[0,1,2]`, with `set_dofs_armature(moving_mass)`, `kp = m·ω²`, `kv = 2mω`, `set_dofs_force_range(±max_force)` |
-| z | pinned every step to `_operation_height` |
-| roll, pitch | pinned every step to 0 |
-| yaw | pinned every step to the action's blade angle (constant within a push, varies between pushes) |
-| descent / lift | `plate_position_translation`: per-step `set_pos` along an interpolated path **plus** per-step partial `set_dofs_position` |
-| sweep | `plate_velocity_translation`: trapezoidal position+velocity reference to the PD servo, **plus** per-step partial `set_dofs_position(zero_velocity=False)` |
-| teleports | `set_pos(..., zero_velocity=True)` to clearance height before descent and away after lift |
-
-Note yaw is **not** constant across the dataset, so the redesign needs a real
-rotary DOF, not a rigid orientation.
-
----
+See `plate_model.md` §1–§2 for the current model in detail. In brief: a free
+6-DOF box, x/y driven by a PD servo against a trapezoidal reference, and z /
+roll / pitch / yaw overwritten every step with a partial `set_dofs_position`.
 
 ## 3. Proposed model
 
