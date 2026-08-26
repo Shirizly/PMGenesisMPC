@@ -91,32 +91,42 @@ Costs **+1.8 %** per action: every quantity is a running max in GPU tensors, rea
 back exactly once at the end. A per-step `.item()` would reinstate the GPU sync
 that §1.2 of the scaling doc removed.
 
-### Read the `sweep` row, not `lower` or `lift`
+### All three phases report meaningful loads
 
-The phases are not comparable, and this is not a detail. The descent and lift
-drive the plate by teleport while its PD servo still holds an older target, so
-the servo commands full force against its own motion. Measured:
+Earlier they did not. The descent and lift move the tool by teleport, and the PD
+target was left at whatever `update_material_state` last froze it to — the
+*previous* action's parked pose, high above the tray and at a different x/y. So
+the servo spent the whole descent driving at its 30 N limit toward somewhere the
+tool was not going: 100 % saturation, while the granular reaction was 0.02 N.
+
+That was not only a misleading number. The actuator force enters the constraint
+solve, and because it pointed largely *upward* it held the blade off the pile
+during the final descent steps. `plate_position_translation` now keeps the servo
+target in step with the teleport, which costs one target write per step and
+resets nothing:
 
 | n | phase | actuator | granular reaction | saturated |
 |---|---|---|---|---|
-| 50 | lower | **30.00 N** | 0.000 N | **100 %** |
-| 50 | **sweep** | **1.78 N** | 0.026 N | 0 % |
-| 50 | lift | 22.98 N | 0.006 N | 0 % |
-| 200 | lower | **30.00 N** | 0.024 N | **100 %** |
-| 200 | **sweep** | **1.77 N** | 0.212 N | 0 % |
-| 200 | lift | 22.98 N | 0.070 N | 0 % |
+| 50 | lower | 0.01 N | 0.000 N | 0 % |
+| 50 | sweep | **1.78 N** | 0.026 N | 0 % |
+| 50 | lift | 0.01 N | 0.000 N | 0 % |
+| 200 | lower | 0.10 N | 0.208 N | 0 % |
+| 200 | **sweep** | **1.76 N** | 0.219 N | 0 % |
+| 200 | lift | 0.01 N | 0.009 N | 0 % |
 
-So a single figure across phases would report a machine permanently at its
-structural limit, when the actual push load is 1.8 N. That 30 N is a control
-artifact of the `pinned` teleport, not load.
+Note the descent's *contact* force rose (0.024 → 0.208 N at n=200) when the
+spurious 30 N was removed: the blade now settles onto the pile instead of being
+held off it. Transitions recorded before this fix therefore differ slightly —
+at n=50, COM 4.45 → 4.38 mm and displaced mass 223 → 220 mm, which is around the
+measurement noise floor but not identically zero.
 
 ### What the sweep numbers say
 
 Pushing 200 objects costs the actuator **1.8 N and 0.001 Nm** against a granular
-reaction of **0.21 N**, with tracking error 0.34 mm — well under one particle.
-Actuator force is *identical* at 50 and 200 objects (1.78 vs 1.77 N) while the
-reaction grows 8× (0.026 → 0.212 N), so the tool is nowhere near pile-limited:
-roughly **17× headroom** against the 30 N budget.
+reaction of **0.22 N**, with tracking error 0.34 mm — well under one particle.
+Actuator force is *identical* at 50 and 200 objects (1.78 vs 1.76 N) while the
+reaction grows 8x (0.026 → 0.219 N), so the tool is nowhere near pile-limited:
+roughly **17x headroom** against the 30 N budget.
 
 ## 5. Known limitation: solver errors are unreportable during a push
 

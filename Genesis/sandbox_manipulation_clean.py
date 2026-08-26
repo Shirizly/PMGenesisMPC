@@ -1520,9 +1520,19 @@ class SandboxManipulation:
         for i in range(n):
             if self._plate_hold_mode == "servo":
                 self.plate.control_dofs_position(path[i], dofs_idx_local=[0, 1, 2])
-                _servo_settle = True
             else:
                 self.plate.set_pos(pos=path[i])
+                # Keep the servo's target in agreement with where the teleport
+                # is putting the tool. Without this the target is still whatever
+                # update_material_state froze it at -- the PREVIOUS action's
+                # parked pose, high above the tray and at a different x/y -- so
+                # the servo spends the whole descent driving at its 30 N limit
+                # toward a place the tool is not going. That is not only a
+                # misleading number in reaction_report(): the actuator force
+                # enters the constraint solve, so contacts made late in the
+                # descent see it. A target write is cheap and resets nothing.
+                self.plate.control_dofs_position_velocity(
+                    path[i], torch.zeros_like(path[i]), dofs_idx_local=[0, 1, 2])
                 self.plate.set_dofs_position(
                     position=self._vertical_dof_fix,
                     dofs_idx_local=self._vertical_dofs_local

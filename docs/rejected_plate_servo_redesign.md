@@ -263,7 +263,7 @@ What `servo` buys, concretely:
    second step, so NaN and buffer overflow during a push are structurally
    invisible. That is not hypothetical: it is what hid the hibernation NaN, and
    what made the 57x measurement look valid.
-2. The reaction report stops lying about the descent. `pinned` reports 30.00 N at
+2. ~~The reaction report stops lying about the descent.~~ **Since fixed in `pinned` mode** by keeping the servo target in step with the teleport, so this is no longer an argument for `servo`. `pinned` reports 30.00 N at
    100 % saturation there — the teleport fighting a stale servo target, not load.
    `servo` reports 1.04 N at 0 %. Since the report exists to set real-robot
    limits, a phase that always claims a structural-limit hit is worse than no
