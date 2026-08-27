@@ -207,8 +207,22 @@ budget on top gives an 8× lower noise floor at 0.81× the baseline cost — the
 removed collider/constraint resets cost more than five times the solver
 iterations do.
 
-Both changes are now the shipped defaults (`hold_plate_by_control: true`,
-`iterations: 50`, `tolerance: 1e-6`).
+> **Stale as written — corrected.** Of the two changes, only the plate one
+> survives, and neither config key above is current:
+>
+> * Holding the plate by control is now **unconditional**; the
+>   `hold_plate_by_control` flag no longer exists.
+> * `iterations: 50` / `tolerance: 1e-6` were **reverted to 10 / 1e-4**. This
+>   A/B was settle-only, where extra iterations are nearly free because the
+>   plate is clear of the pile and nothing is moving. Measured on a broadside
+>   *push* — the regime that actually dominates collection cost — 50 iterations
+>   is 1.6-1.8x slower per step. See `probe_push_cost.py`.
+>
+> The plate finding itself stands, and it is worth noting what it cleared:
+> §3's Q10 suspected the plate's 0.5 kg armature against a 0.125 g particle
+> (4000:1) of being the cause. It was not — the per-step `set_dofs_position`
+> was. The gantry actuator model is in fact what made the fix possible, since
+> holding a 2.4 g box by control is only trustworthy given a real `kp`.
 
 ### 1.8 What the remaining movers actually are
 

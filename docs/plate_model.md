@@ -57,9 +57,28 @@ video recorder and the probes: `on_phase(phase)` at two boundaries, and
 
 | phase | how it moves | steps |
 |---|---|---|
-| **lower** | teleport to clearance height, then `plate_position_translation` interpolates down with a per-step `set_pos` | `clearance_ctrl_steps` (25) |
+| **lower** | teleport to clearance height, then `plate_position_translation` drives down along an interpolated path (`approach_mode`, below) | `clearance_ctrl_steps` (25) + `arrival_steps` (12) |
 | **sweep** | `plate_velocity_translation` feeds the servo a *moving* trapezoidal reference — position and velocity at the current time, not the endpoint | from the trapezoid's real duration, ~148 |
-| **lift** | interpolate up, then teleport clear of the pile | 25 |
+| **lift** | driven up the same way, then teleported clear of the pile | 25 + 12 |
+
+**`approach_mode`** decides how the lower and lift are driven, independently of
+`hold_mode`:
+
+* **`servo`** (default) — the actuator drives the tool, so particles can push
+  back on it. `arrival_steps` then holds the final target until the servo has
+  actually arrived: a PD servo trailing a moving ramp lags by about `v·τ`
+  (~5 mm here), and without the hold the sweep's own positioning would insert
+  the blade into the pile in one step.
+* `teleport` — writes the pose each step with `set_pos`. The blade arrives with
+  zero velocity and each step's penetration is resolved in one solve, so nothing
+  it lands on can resist it.
+
+Measured at n=200 broadside, `servo` against `teleport`: particle penetration
+**1.09 → 0.53 mm**, and its run-to-run spread **±0.45 → ±0.06 mm**, with COM and
+displaced mass inside the noise floor. It costs **30 % more per push** — the
+price of simulating the descent rather than faking it, since `teleport` zeroes
+the blade's velocity every step and the pile barely reacts. Revert to `teleport`
+if that cost outweighs the fidelity at your object count.
 
 The sweep's reference must be a moving one. Commanding the endpoint turns the
 same PD into a position servo whose speed is proportional to distance remaining,

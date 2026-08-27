@@ -150,6 +150,10 @@ CONFIGS = {
     # reference rather than swapped in blind. Overrides plate.hold_mode, not
     # rigid_options -- see PLATE_OVERRIDES.
     "servo_plate": ({}, 0.0),
+    # The descent/lift driving ALONE, with the sweep hold left as-is. Separated
+    # from servo_plate because that config changed both at once, so its failure
+    # could not be attributed to either half.
+    "servo_approach": ({}, 0.0),
 }
 
 # name -> (start_xy, stop_xy, yaw). Fixed, not sampled: every configuration must
@@ -164,7 +168,10 @@ ACTIONS = {
 
 # config name -> plate:{} overrides, for candidates that change the tool model
 # rather than the solver.
-PLATE_OVERRIDES = {"servo_plate": {"hold_mode": "servo"}}
+PLATE_OVERRIDES = {
+    "servo_plate": {"hold_mode": "servo"},
+    "servo_approach": {"approach_mode": "servo"},
+}
 
 PRE_SETTLE_STEPS = 50     # fixed, identical across configs
 POST_SETTLE_STEPS = 300   # fixed, identical across configs

@@ -135,6 +135,23 @@ plate:
   # (docs/rejected_plate_servo_redesign.md) -- so `pinned` is the default and
   # `servo` is kept only for future work.
   hold_mode : pinned
+
+  # How the descent and lift are DRIVEN, independent of hold_mode above.
+  #
+  #   teleport  write the pose each step with set_pos. The blade arrives at the
+  #             pile with zero velocity and each step's penetration is resolved
+  #             in one solve -- it cannot be resisted by what it lands on.
+  #   servo     drive it with the actuator, so particles push back.
+  #
+  # `servo` measured at n=200 broadside: particle penetration 1.09 -> 0.53 mm
+  # and its run-to-run spread +/-0.45 -> +/-0.06 mm, with COM and displaced mass
+  # inside the noise floor. It costs 30% more per push, which is the price of
+  # simulating the descent rather than faking it: teleport zeroes the blade's
+  # velocity every step, so the pile barely reacts and those steps are cheap.
+  # Set back to `teleport` if that cost outweighs the fidelity at your n.
+  approach_mode : servo
+  arrival_steps : 12                        # steps holding the final descent target so
+                                            # the servo arrives before the sweep starts
   orientation_inertia : 2.0e-4              # kg m^2, rotary axis reflected inertia
                                             # (~moving_mass * (tool_length/2)^2)
   orientation_bandwidth_hz : 30.0           # stiffer than the linear axes: this axis is

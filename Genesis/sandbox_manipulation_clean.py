@@ -205,6 +205,18 @@ class SandboxManipulation:
         self._plate_max_torque = float(self._plate_params.get("max_torque", 2.0))
         self._plate_arrival_steps = int(
             self._plate_params.get("arrival_steps", 12))
+        # How the descent and lift are DRIVEN, independent of how the sweep
+        # HOLDS its uncommanded dofs. These were originally one knob, which
+        # meant the servo experiment changed two things at once and its failure
+        # could not be attributed to either. "teleport" writes the pose each
+        # step, so the blade arrives at the pile with zero momentum and each
+        # step's penetration is resolved in one solve; "servo" drives it with
+        # the actuator, so particles can actually resist it.
+        self._plate_approach_mode = str(self._plate_params.get(
+            "approach_mode", "servo" if self._plate_hold_mode == "servo" else "teleport"))
+        if self._plate_approach_mode not in ("teleport", "servo"):
+            raise ValueError(f"plate.approach_mode must be 'teleport' or "
+                             f"'servo', got {self._plate_approach_mode!r}")
         # Extra steps after the reference reaches the goal, letting the servo
         # close its remaining tracking error before the sweep is judged.
         self._sweep_settle_steps = int(self._sim_params.get("sweep_settle_steps", 12))
@@ -1501,7 +1513,7 @@ class SandboxManipulation:
                       else torch.linspace(0, 1, n, device=gs.device))
         path = (1 - steps_0to1[:, None, None]) * p_start[None, :, :] + steps_0to1[:, None, None] * p_end[None, :, :]
 
-        if self._plate_hold_mode == "servo":
+        if self._plate_approach_mode == "servo":
             # Drive the move with the servo instead of teleporting. The old path
             # wrote the pose with set_pos every step while the PD servo still
             # held an older target, so the servo fought its own motion: measured,
@@ -1518,8 +1530,14 @@ class SandboxManipulation:
         else:
             self.plate.set_pos(p_start)
         for i in range(n):
-            if self._plate_hold_mode == "servo":
+            if self._plate_approach_mode == "servo":
                 self.plate.control_dofs_position(path[i], dofs_idx_local=[0, 1, 2])
+                if self._plate_hold_mode != "servo":
+                    # Orientation is still held the hold_mode way; only the
+                    # DRIVING of x/y/z changed here.
+                    self.plate.set_dofs_position(
+                        position=self._vertical_dof_fix[:, 2:],
+                        dofs_idx_local=[3, 4, 5], zero_velocity=False)
             else:
                 self.plate.set_pos(pos=path[i])
                 # Keep the servo's target in agreement with where the teleport
@@ -1542,7 +1560,7 @@ class SandboxManipulation:
             if on_step is not None:
                 on_step(i)
 
-        if self._plate_hold_mode == "servo":
+        if self._plate_approach_mode == "servo":
             # A PD servo trailing a moving ramp lags by ~v*tau: at 0.5 m/s and
             # tau = 1/omega = 10.6 ms that is ~5 mm, and measured the descent
             # ended 2.1 mm high. The sweep then teleported the blade that 2.1 mm
