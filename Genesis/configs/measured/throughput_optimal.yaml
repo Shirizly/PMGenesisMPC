@@ -1,34 +1,33 @@
 best:
   20:
     n_envs: 128
-    seconds_per_transition: 0.069
-    transitions_per_sec: 14.4954
+    seconds_per_transition: 0.107
+    transitions_per_sec: 9.3354
   50:
-    n_envs: 128
-    seconds_per_transition: 0.255
-    transitions_per_sec: 3.9204
+    n_envs: 64
+    seconds_per_transition: 0.182
+    transitions_per_sec: 5.5045
   70:
-    n_envs: 64
-    seconds_per_transition: 0.627
-    transitions_per_sec: 1.5952
+    n_envs: 32
+    seconds_per_transition: 0.345
+    transitions_per_sec: 2.8964
   100:
-    n_envs: 64
-    seconds_per_transition: 1.27
-    transitions_per_sec: 0.7873
+    n_envs: 32
+    seconds_per_transition: 0.792
+    transitions_per_sec: 1.2631
   150:
-    n_envs: 2
-    seconds_per_transition: 15.826
-    transitions_per_sec: 0.0632
+    n_envs: 16
+    seconds_per_transition: 5.791
+    transitions_per_sec: 0.1727
   200:
-    n_envs: 1
-    seconds_per_transition: 37.859
-    transitions_per_sec: 0.0264
+    n_envs: 2
+    seconds_per_transition: 13.208
+    transitions_per_sec: 0.0757
 measured_under:
-  backfilled: metadata block added after the run; the benchmark now writes it directly,
-    so future runs will not need this
   box_friction: 0.3
+  free_vram_gib: 7.48
   gpu: NVIDIA GeForce RTX 4070 Laptop GPU
-  measured_at: '2026-08-13T01:11:09'
+  measured_at: '2026-08-29T10:16:54'
   particle_density: 1000.0
   particle_friction: 0.3
   particle_size: 0.005
@@ -38,10 +37,11 @@ measured_under:
   transitions_per_cell: 2
 n_envs:
   20: 128
-  50: 128
-  70: 64
-  100: 64
-  150: 2
-  200: 1
-note: throughput-optimal env counts measured by tests/scaling_investigation/benchmark_throughput.py;
-  paste into a collection plan's plan.n_envs
+  50: 64
+  70: 32
+  100: 32
+  150: 16
+  200: 2
+note: 'Throughput-optimal env counts. Reference from a collection plan with `n_envs:
+  <path to this file>` rather than copying the numbers, so they cannot silently go
+  stale.'

@@ -41,7 +41,12 @@ plan:
   # improve this many times in a row. Throughput rises while the GPU is
   # underused and falls once it is saturated, so there is no reason to pay for
   # the whole ladder at every object count. Set to 0 to force the full sweep.
-  stop_after_declines: 2
+  # 0 = full sweep. The previous table was produced with early stopping, which
+  # meant n=150 never tried past 8 envs and n=200 never past 4 -- so "the
+  # optimum is 2 envs at 150" was never actually tested against 16 or 32. With
+  # the solver, the tool model and the Genesis version all changed since, the
+  # shape of the curve cannot be assumed, so the whole ladder is measured.
+  stop_after_declines: 0
 
   # Skip cells whose estimated VRAM exceeds this fraction of what is free. The
   # estimate carries a few percent of error, so this is deliberately 1.0 rather

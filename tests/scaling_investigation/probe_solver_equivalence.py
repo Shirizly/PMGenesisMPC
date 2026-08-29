@@ -146,6 +146,15 @@ CONFIGS = {
     # for a cube resting on the tray that normal is vertical, so what it really
     # resists is cubes twisting in place under an off-centre blade hit.
     "no_torsional": ({"enable_torsional_friction": False}, 0.0),
+    # The solver budget was set to 10/1e-4 on COST evidence alone -- 50
+    # iterations measured 1.6-1.8x slower on a broadside push. The fidelity side
+    # of that trade was only ever checked on a SETTLE, where the plate is clear
+    # of the pile. These price it on a push, against penetration.
+    "iter50": ({"iterations": 50, "ls_iterations": 50}, 0.0),
+    # Iterations alone may change nothing if tolerance 1e-4 is already met
+    # inside 10, so this is the full Genesis default budget.
+    "genesis_budget": ({"iterations": 50, "ls_iterations": 50,
+                        "tolerance": 1e-6, "ls_tolerance": 0.01}, 0.0),
     # The plate redesign itself, as a candidate to be judged against the
     # reference rather than swapped in blind. Overrides plate.hold_mode, not
     # rigid_options -- see PLATE_OVERRIDES.

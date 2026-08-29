@@ -42,6 +42,14 @@ rigid_options:
   # count: at 10 iterations that fix alone already takes the worst particle from
   # 25.1 mm/s to 1.0 mm/s and the noise floor to 0.21 mm/s, comfortably inside
   # the 1 mm/s rest threshold. See tests/scaling_investigation/probe_push_cost.py.
+  #
+  # The fidelity side of that trade has now been priced too, on a PUSH rather
+  # than a settle (probe_solver_equivalence.py, n=100, 3 replicates): raising
+  # iterations to 50 at this tolerance is BIT-IDENTICAL -- penetration 0.50 vs
+  # 0.50 mm broadside, 0.48 vs 0.48 offset, COM and displaced mass unchanged.
+  # The solver reaches tolerance 1e-4 well inside 10 iterations, so the other 40
+  # are never executed. Only tightening tolerance to 1e-6 moves anything, by
+  # <=8% and inconsistently in sign. So 10 costs nothing in contact quality.
   iterations: 10
   ls_iterations: 10
   tolerance: 1e-4

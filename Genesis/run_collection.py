@@ -238,6 +238,13 @@ def parse_args():
                    help="base seed, forwarded to each n_objects run offset by "
                         "its own index so the runs do not all draw the same "
                         "actions. Omit for an unseeded (non-reproducible) run.")
+    p.add_argument("--rebuild-state-library", action="store_true",
+                   help="settle fresh state libraries even where a compatible "
+                        "one already exists. Needed after any physics change: a "
+                        "library is a set of states that were AT REST under the "
+                        "physics that produced them, and restoring one under "
+                        "different physics starts the pile slightly off "
+                        "equilibrium.")
     p.add_argument("--debug", action="store_true")
     return p.parse_args()
 
@@ -338,6 +345,8 @@ def main():
             cmd += ["--state-library", str(spec["state_library_settles"])]
         if spec["placement_aware"]:
             cmd += ["--placement-aware"]
+        if args.rebuild_state_library:
+            cmd += ["--rebuild-state-library"]
         if args.seed is not None:
             # Offset per run: the same seed in every subprocess would draw the
             # identical action sequence at every object count, which looks like
