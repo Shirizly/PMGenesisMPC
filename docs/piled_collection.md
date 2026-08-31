@@ -134,27 +134,39 @@ against the pile. If both are passed, `pile_aware` wins.
 
 ### What it does not guarantee
 
-- **A fixed `push_length` is often shortened, and 40 mm is too long for this
-  geometry.** Measured on a 30-cube pile in the 128 mm tray: **34% of pushes
-  (11/32) could not travel 40 mm** from their pile-contact start without leaving
-  the tray. This is reported as a `WARNING`, because a shortened push is no
-  longer in its length bin.
+- **The pile outgrows the blade's workspace box, and that (not the tray) is why
+  a 40 mm push does not fit.** Measured on the first piled run: a settled,
+  pushed-around 30-cube pile reaches a particle radius of **p95 34.6 mm, max
+  54 mm**, while the blade's allowed box is only **23.5-42.5 mm** half-extent
+  (it is the tray shrunk by the blade footprint and safety margin, and it is
+  yaw-dependent). Placing the blade one particle-width behind such a pile's near
+  face therefore lands **outside** the box **35.8%** of the time — and a start
+  outside the box has nowhere to travel, so **3.3% of pushes came out at ~0 mm**:
+  no-op transitions costing a full simulation each, which is precisely what
+  pile-aware sampling exists to prevent.
 
-  The arithmetic, which the first version of this document got wrong by assuming
-  a centred pile makes it a non-issue: the blade starts *outside* the pile on the
-  near side, so the span consumed is
+  An earlier version of this document blamed the tray size and the sum
+  `pile diameter + clearance + push length`. That framing was wrong: the binding
+  constraint is that the pile's *outer radius* is comparable to the blade box's
+  half-extent, so the problem appears even for short pushes and shortening the
+  push alone does not fix it.
 
-      pile diameter + clearance + push length  ~=  34 + 5 + 40  =  79 mm
+  Two changes address it:
 
-  against a usable box of only 47-85 mm depending on push direction (the box is
-  yaw-dependent, and along a diagonal the binding axis is the tighter one). So
-  **keep `push_length` at or below ~25 mm for a 30-cube pile in this tray**, or
-  expect a third of the dataset to fall out of its length bin.
+  1. `_pile_aware_stops` now **clamps the start into the workspace box**. For a
+     tightly packed pile this changes nothing; for a spread one it means the
+     blade starts just *inside* the pile rather than just behind it, which still
+     sweeps material and — unlike the previous behaviour — can actually move.
+  2. `push_length` in the shipped plan is **20 mm, not 40**, so the remaining
+     travel comfortably fits. 20 mm is also 4 cube widths, keeping the
+     perturbation modest relative to the pile — the regime in which a
+     first-order (linear) model is most defensible.
 
-  This only matters for a *single-operator* fit, which needs one length. Anything
-  that treats push length as an input (the variance decomposition, a
-  continuous-`u` operator) is unaffected — the length simply becomes another
-  feature, and the `WARNING` count tells you how much variation there is.
+  A fixed `push_length` can still be shortened if even a clamped start has too
+  little room; that is reported as a `WARNING`, because a shortened push is no
+  longer in its length bin. It only matters for a *single-operator* fit; anything
+  treating push length as an input is unaffected.
+
 - **`min_swath_particles` can be unreachable** (e.g. a sparse configuration where
   no lateral alignment catches enough particles). Those draws are counted and
   logged, and `pile_contact_starts` returns an `ok` mask so a caller can drop

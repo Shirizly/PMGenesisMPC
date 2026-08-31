@@ -432,3 +432,30 @@ def test_batched_env_sample_shape():
                                            clearance=0.005)
     assert starts.shape == (4, 6, 2)
     assert n_in.shape == (4, 6) and ok.shape == (4, 6)
+
+
+def test_pile_contact_start_can_be_far_outside_a_small_box():
+    """Documents WHY SandboxManipulation clamps the start.
+
+    `pile_contact_starts` places the blade behind the pile's near face; it knows
+    nothing about the workspace box. For a pile whose radius approaches the box
+    half-extent, that start is outside the box — measured on real data, 35.8% of
+    the time, and a start outside the box has nowhere to travel (3.3% of pushes
+    came out at ~0 mm). The clamp lives in the caller, so this test pins the
+    property the caller has to defend against rather than asserting it away.
+    """
+    # A spread pile: radius ~35 mm, like a settled-and-pushed 30-cube heap.
+    g = torch.Generator().manual_seed(11)
+    ang = torch.rand(256, generator=g) * 2 * torch.pi
+    rad = 0.030 + 0.005 * torch.rand(256, generator=g)
+    p = torch.stack([rad * torch.cos(ang), rad * torch.sin(ang)], dim=-1)
+    p = p.unsqueeze(0).expand(64, -1, -1)
+    h = _headings(batch=64, seed=12)
+
+    starts, _, ok = pile_contact_starts(p, h, blade_half_length=0.02,
+                                        clearance=0.005, min_swath=3)
+    assert ok.all()
+    # The tightest blade box in the 127 mm tray is ~23.5 mm half-extent.
+    outside = (starts.abs() > 0.0235).any(dim=-1)
+    assert outside.any(), (
+        "fixture should reproduce the out-of-box condition the clamp exists for")

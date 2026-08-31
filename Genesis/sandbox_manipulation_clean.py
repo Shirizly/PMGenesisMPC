@@ -1777,7 +1777,7 @@ class SandboxManipulation:
             action_starts, angles, u_dir = self._apply_pile_aware_starts(
                 n_samples, tool_length, tool_width,
                 clearance=pile_clearance, min_swath=min_swath_particles)
-            action_stops = self._pile_aware_stops(
+            action_starts, action_stops = self._pile_aware_stops(
                 action_starts, angles, u_dir, tool_length, tool_width,
                 push_length)
             # The geometry is already exactly perpendicular, exactly the
@@ -1859,7 +1859,10 @@ class SandboxManipulation:
 
     def _pile_aware_stops(self, action_starts, angles, u_dir,
                           tool_length, tool_width, push_length):
-        """End points for pile-aware pushes: travel along ``u_dir``.
+        """Start and end points for pile-aware pushes, travelling along ``u_dir``.
+
+        Returns ``(action_starts, action_stops)`` because the start may be moved:
+        see the clamp below.
 
         The start is dictated by the pile, so it can sit anywhere the pile
         reaches; what has to stay inside the tray is the *travel*. Distance is
@@ -1877,6 +1880,26 @@ class SandboxManipulation:
         low, high = sampling_box(angles, self._granular_vol,
                                  tool_length, tool_width, self._safety_margin)
         starts_xy = action_starts[..., :2]
+
+        # The pile spreads well past its spawn extent -- measured, particle
+        # radius reaches p95 34.6 mm and max 54 mm against a blade box of only
+        # 23.5-42.5 mm half-extent -- so "one particle-width behind the pile's
+        # near face" is frequently OUTSIDE the workspace the blade may occupy.
+        # Measured before this clamp: 35.8% of starts out of box and 3.3% of
+        # pushes travelling ~0 mm, i.e. no-op transitions that cost a full
+        # simulation. Clamping the start into the box trades a little of the
+        # "starts exactly at the pile edge" property for a push that can
+        # actually travel; for a spread pile it means starting just inside the
+        # pile rather than just behind it, which still sweeps material.
+        clamped = starts_xy.clamp(min=low, max=high)
+        n_clamped = int((clamped - starts_xy).abs().amax(dim=-1).gt(1e-9).sum())
+        if n_clamped and self._debug:
+            self._log(f"pile-aware: {n_clamped}/{clamped[..., 0].numel()} blade "
+                      f"starts clamped into the workspace box (the pile reaches "
+                      f"past it)")
+        starts_xy = clamped
+        action_starts = torch.cat((starts_xy, action_starts[..., 2:]), dim=-1)
+
         t_max = ray_box_max_travel(starts_xy, u_dir, low, high)   # (..., 1)
 
         if push_length is None:
@@ -1889,12 +1912,13 @@ class SandboxManipulation:
             if bool(short.any()):
                 self._log(f"WARNING pile-aware: {int(short.sum())}/{short.numel()} "
                           f"pushes cannot travel the requested "
-                          f"{push_length} m from their pile-contact start "
-                          f"without leaving the tray, and were shortened — those "
-                          f"transitions are NOT at the requested length")
+                          f"{push_length} m even from a clamped start, and were "
+                          f"shortened - those transitions are NOT at the "
+                          f"requested length")
             L = torch.minimum(L, t_max)
 
-        return torch.cat((starts_xy + u_dir * L, action_starts[..., 2:]), dim=-1)
+        return action_starts, torch.cat((starts_xy + u_dir * L,
+                                        action_starts[..., 2:]), dim=-1)
 
     def _apply_pile_aware_starts(self, n_samples, tool_length, tool_width,
                                  clearance=None, min_swath=3):

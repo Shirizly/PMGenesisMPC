@@ -66,8 +66,18 @@ plan:
   pile_clearance: null    # null = one particle size (5 mm)
   min_swath_particles: 3
 
-  # Fixed length keeps this a single-operator dataset, matching
-  # configs/dataset/genesis_foresight_L040.yaml so the piled and scattered
-  # results are directly comparable. pile_aware applies the perpendicular
-  # convention itself.
-  push_length: 0.04
+  # 20 mm, not 40. Measured on the first piled run: a settled 30-cube pile
+  # spreads to a particle radius of p95 34.6 mm / max 54 mm, against a blade
+  # workspace box of only 23.5-42.5 mm half-extent. Placing the blade just
+  # behind such a pile's near face therefore lands OUTSIDE the box 35.8% of the
+  # time, and those pushes then had nowhere to travel (3.3% came out at ~0 mm --
+  # no-op transitions costing a full simulation each).
+  #
+  # Two changes address that: the sampler now clamps the start into the box (so
+  # a very spread pile is entered rather than approached), and the push is
+  # shortened here so the remaining travel comfortably fits. 20 mm is also 4
+  # cube widths, which keeps the perturbation modest relative to the pile --
+  # the regime where a first-order (linear) model is most defensible.
+  #
+  # pile_aware applies the perpendicular convention itself.
+  push_length: 0.02

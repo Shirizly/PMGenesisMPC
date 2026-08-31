@@ -1,11 +1,14 @@
-# Piled 30-cube dataset with pile-aware 40 mm pushes, for re-running the
+# Piled 30-cube dataset with pile-aware 20 mm pushes, for re-running the
 # linear-foresight comparison on actual piles rather than a sparse single layer.
 # Collected by Genesis/configs/collection_pile30.yaml; see
 # docs/piled_collection.md.
 #
-# Deliberately the same geometry, material and push length as
-# genesis_foresight_L040.yaml, so the only difference between the two results is
-# the pile structure and the action distribution.
+# Same geometry and material as genesis_foresight_L040.yaml. The push length
+# differs (20 mm here vs 40 mm there): a settled pile spreads past the blade's
+# allowed workspace box, so a 40 mm push from a pile-contact start could not fit
+# and 3.3% travelled ~0 mm. See Genesis/configs/collection_pile30.yaml for the
+# measurements. Any comparison between the two datasets must therefore treat
+# push length as a difference, not hold it fixed.
 
 type: genesis
 
