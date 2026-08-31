@@ -115,6 +115,40 @@ real-vs-candidate tagging) is tracked by the env wrapper's own step
 counter — no other function signature in the MPC loops changed to support
 this.
 
+## 2.1 Action Sampling and Action-Space Restriction
+
+`Genesis/action_sampling.py` owns push-action geometry that is *pure torch* —
+no `import genesis`, so it is unit-testable without a GPU
+(`tests/test_action_sampling.py`). Two groups, with different purposes:
+
+- **Batch shaping** — `equalize_travel_distance`, `shared_batch_distance`.
+  Reduce what a lockstep batch costs without changing which actions are
+  reachable.
+- **Action-space restriction** — `blade_normal`, `sampling_box`,
+  `constrain_push`, `relative_blade_angle`. Change which actions are drawn at
+  all: perpendicular-only pushes and/or a fixed push length. Added for the
+  switched-linear visual-foresight baseline
+  (`docs/linear_visual_foresight_baseline.md` §7).
+- `ray_box_max_travel` is the shared primitive both groups use.
+
+Ownership boundary: this module holds the *geometry*;
+`SandboxManipulation.generate_action_samples` holds the *policy* (what order to
+apply things in, which flags default to what) and `_constrain_push_geometry` is
+the thin bridge. Anything that needs `gs.device`, the plate config, or the
+tray dimensions belongs on the class, not here.
+
+Two invariants any change must preserve:
+
+- **Restriction runs after placement-aware sampling**, which replaces both the
+  start point and the yaw. Running it before lets the yaw change underneath and
+  silently breaks perpendicularity. `_constrain_push_geometry` also recomputes
+  the sampling box from the *current* angles, since the box depends on yaw.
+- **A constrained push is never shortened to fit the tray — the start moves
+  instead.** Shortening would drop a transition out of its requested length
+  bin (silently poisoning a single-operator fit) and would distort the
+  push-length distribution the restriction is meant to leave alone. Genuinely
+  impossible pushes are reported via the `truncated` mask and logged loudly.
+
 ## 3. Transform Pipeline Pattern
 
 Use composable callable transforms for representation conversion.

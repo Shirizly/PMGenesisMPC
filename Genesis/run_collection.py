@@ -345,6 +345,10 @@ def main():
             cmd += ["--state-library", str(spec["state_library_settles"])]
         if spec["placement_aware"]:
             cmd += ["--placement-aware"]
+        if spec.get("perpendicular_pushes"):
+            cmd += ["--perpendicular-pushes"]
+        if spec.get("push_length") is not None:
+            cmd += ["--push-length", str(spec["push_length"])]
         if args.rebuild_state_library:
             cmd += ["--rebuild-state-library"]
         if args.seed is not None:

@@ -1582,6 +1582,8 @@ class SandboxManipulation:
             placement_clearance: float = 0.0,
             placement_clearance_bias: float = 0.0,
             shared_travel_distance: bool = False,
+            perpendicular_pushes: bool = False,
+            push_length: float | None = None,
         ):
         """
         Generate random action samples for all environments.
@@ -1608,6 +1610,21 @@ class SandboxManipulation:
                 the longest one's duration — measured at 1.54x of a 2.64x
                 batching penalty at 8 envs. Off by default so single-env and
                 MPC callers are unaffected; collection turns it on.
+            perpendicular_pushes: send every push along the blade's face
+                normal instead of in an independently drawn direction. This is
+                the planar-pushing convention (Mason 1986) and it collapses
+                the 5-DOF action to 4-DOF, which is what the switched-linear
+                visual-foresight baseline assumes — see
+                docs/linear_visual_foresight_baseline.md §7. The push-length
+                distribution is unchanged: the drawn end point is reused for
+                its distance, only its direction is replaced.
+            push_length: if set, every push travels exactly this distance in
+                metres. Combined with ``perpendicular_pushes`` this yields a
+                dataset supporting a *single* transition operator, which is
+                the targeted-collection case the baseline needs first. Pushes
+                that cannot reach the length inside the tray are truncated and
+                reported — check that count before fitting, since a truncated
+                push is not in the requested length bin.
 
         Returns:
             Tuple of (action_starts, action_stops, angles) each of shape [n_envs * n_samples, 3/1]
@@ -1618,14 +1635,12 @@ class SandboxManipulation:
         n_total = self._n_envs * n_samples
         angles = (-torch.pi/2) + torch.rand(n_total, device=gs.device) * torch.pi
         
-        # Sampling dimensions in x and y from box center
-        sample_space_x = self._granular_vol[0]/2 - (torch.cos(angles) * tool_length/2 + abs(torch.sin(angles)) * tool_width/2 + self._safety_margin)
-        sample_space_y = self._granular_vol[1]/2 - (abs(torch.sin(angles)) * tool_length/2 + torch.cos(angles) * tool_width/2 + self._safety_margin)
+        # Sampling dimensions in x and y from box center — the blade's
+        # axis-aligned footprint depends on its yaw, so the box does too.
+        from .action_sampling import sampling_box
+        low, high = sampling_box(angles, self._granular_vol,
+                                 tool_length, tool_width, self._safety_margin)
 
-        # Min and max coordinates
-        low = torch.stack([-sample_space_x, -sample_space_y], axis=1)
-        high = torch.stack([sample_space_x, sample_space_y], axis=1)
-        
         # Sample start and end positions
         start_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
         stop_samples = (high - low) * torch.rand((n_total, 2), device=gs.device) + low
@@ -1648,13 +1663,67 @@ class SandboxManipulation:
                 clearance_bias=placement_clearance_bias,
             )
 
-        if shared_travel_distance and self._n_envs > 1:
+        if perpendicular_pushes or push_length is not None:
+            # After placement_aware, not before: it replaces the yaw, and the
+            # push direction is defined relative to that yaw.
+            action_starts, action_stops = self._constrain_push_geometry(
+                action_starts, action_stops, angles, tool_length, tool_width,
+                perpendicular=perpendicular_pushes, length=push_length)
+
+        if shared_travel_distance and self._n_envs > 1 and push_length is None:
+            # Skipped when the length is fixed: it is already shared by
+            # construction, and re-deriving the batch target from env 0's own
+            # (possibly boundary-truncated) travel would drag every other env
+            # down to that short distance.
             action_stops = self._equalize_batch_travel(
                 action_starts, action_stops,
                 low.reshape(self._n_envs, n_samples, 2),
                 high.reshape(self._n_envs, n_samples, 2))
 
         return action_starts, action_stops, angles
+
+    def _constrain_push_geometry(self, action_starts, action_stops, angles,
+                                 tool_length, tool_width, *,
+                                 perpendicular: bool, length: float | None):
+        """Restrict pushes to the blade normal and/or a fixed travel distance.
+
+        Returns ``(action_starts, action_stops)``. The blade yaw chosen upstream
+        is always preserved; the start point is too, *except* when a fixed
+        length would not fit inside the tray from where it was drawn, in which
+        case the start is nudged rather than the push shortened — a shortened
+        push would silently leave the requested length bin. The sampling box is
+        *recomputed* here rather than reused from the caller, because
+        placement-aware sampling may have replaced the yaw the caller's box was
+        built for.
+
+        See Genesis/action_sampling.py for the geometry and
+        docs/linear_visual_foresight_baseline.md §7 for why this exists.
+        """
+        from .action_sampling import constrain_push, sampling_box
+
+        low, high = sampling_box(angles, self._granular_vol,
+                                 tool_length, tool_width, self._safety_margin)
+        result = constrain_push(
+            action_starts[..., :2], action_stops[..., :2], angles, low, high,
+            perpendicular=perpendicular, length=length)
+
+        n_moved = int(result.starts_moved.sum())
+        n_trunc = int(result.truncated.sum())
+        total = result.truncated.numel()
+        if n_moved and self._debug:
+            self._log(f"constrained pushes: {n_moved}/{total} start points "
+                      f"nudged (by at most {length} m) so the fixed-length push "
+                      f"fits inside the tray")
+        if n_trunc:
+            # Loud regardless of debug: these pushes are NOT at the requested
+            # length, which is exactly what a single-operator dataset must not
+            # contain.
+            self._log(f"WARNING constrained pushes: {n_trunc}/{total} could not "
+                      f"travel the requested length anywhere in the tray — the "
+                      f"push is longer than the sampling box. These transitions "
+                      f"are NOT in the requested length bin.")
+        return (torch.cat((result.starts_xy, action_starts[..., 2:]), dim=-1),
+                torch.cat((result.stops_xy, action_stops[..., 2:]), dim=-1))
 
     def _equalize_batch_travel(self, action_starts, action_stops, low, high):
         """Give every env in a batch the same push length for each sample.
@@ -1938,6 +2007,8 @@ class SandboxManipulation:
             path : str | Path = "training",
             placement_aware: bool = False,
             shared_travel_distance: bool = True,
+            perpendicular_pushes: bool = False,
+            push_length: float | None = None,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -1954,6 +2025,14 @@ class SandboxManipulation:
                 sample (see generate_action_samples). On by default here: it is
                 a large throughput win and costs only within-batch variation in
                 one of five action dimensions.
+            perpendicular_pushes: restrict pushes to the blade face normal
+                (see generate_action_samples).
+            push_length: fix every push's travel distance, in metres (see
+                generate_action_samples). Implies the length is shared across
+                the batch, so ``shared_travel_distance`` becomes a no-op.
+
+        Both restrictions are recorded in the saved config so a restricted
+        dataset is distinguishable from an unrestricted one on disk.
         """
         max_samples = n_samples * self._n_envs
 
@@ -1963,6 +2042,8 @@ class SandboxManipulation:
             "goal_threshold": self._goal_threshold,
             "placement_aware": bool(placement_aware),
             "shared_travel_distance": bool(shared_travel_distance),
+            "perpendicular_pushes": bool(perpendicular_pushes),
+            "push_length": (None if push_length is None else float(push_length)),
         })
 
         # Allocate once or reuse if same size
@@ -1983,7 +2064,9 @@ class SandboxManipulation:
         # Generate random action samples per env
         action_starts, action_stops, angles = self.generate_action_samples(
             n_samples, placement_aware=placement_aware,
-            shared_travel_distance=shared_travel_distance)
+            shared_travel_distance=shared_travel_distance,
+            perpendicular_pushes=perpendicular_pushes,
+            push_length=push_length)
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 

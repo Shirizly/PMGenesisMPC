@@ -1,8 +1,9 @@
 # Linear Visual Foresight (Suh & Tedrake 2020) as a Comparison Baseline
 
-**Status:** PLAN — nothing implemented yet. Intended to be executed on a **new
-fork/branch** off the current work (the `GenesisWorld` line is busy with the
-plate/settling investigation).
+**Status:** IN PROGRESS on branch `VisualForesight`. **Stage 0 (§7) is done** —
+`--perpendicular-pushes` / `--push-length` land the v1 action restriction, and
+the targeted single-operator collection plan is runnable and verified end to
+end. Stages 1+ (§4–5) are still plan only.
 **Source paper:** [`2002.09093v3.pdf`](2002.09093v3.pdf) — H.J.T. Suh & R. Tedrake,
 *The Surprising Effectiveness of Linear Models for Visual Foresight in Object Pile
 Manipulation*, arXiv:2002.09093v3 (16 Jun 2020).
@@ -296,6 +297,13 @@ more `cfg` key (`operator_path`), read by the factory. This is the smallest
 possible seam.
 
 **(b) `fit_switched_linear(...)` — the estimator.**
+Note before choosing sample counts: the row decomposition (their eq. 10) gives
+each of the `N²` output pixels its own problem with `N²` unknowns — 1024 at
+32×32 — so the paper's own 800 training pairs left **every row
+underdetermined**. That is very likely why their non-negativity constraint
+helped as much as it did, and it means regularization here is structural, not
+optional. The targeted collection plan sizes itself to clear 2× the row
+dimension.
 Closed-form matrix OLS by default; `--constraint {none,nonneg,rowsum}` implementing
 their eq. (9) via the eq. (10) row decomposition (`scipy.optimize.nnls` per row,
 `N²` independent problems — trivially parallel with `joblib`/`multiprocessing`).
@@ -542,70 +550,95 @@ so the push direction is `stop − start`, unrelated to the plate yaw — exactl
 `(cos θ, sin θ)`**, so its face normal — the only direction a perpendicular push
 can travel — is `(−sin θ, cos θ)`, up to sign.
 
-### 7.2 The minimal change (~8 lines + flag threading)
+### 7.2 The change, as implemented
 
-Add one kwarg to `generate_action_samples` and rewrite only the *direction* of the
-push, keeping everything else — including the existing push-length distribution —
-untouched:
+Two kwargs on `generate_action_samples`, rewriting only the push *geometry* and
+leaving the yaw alone:
 
-```python
-def generate_action_samples(self, n_samples, ..., perpendicular_pushes: bool = False):
-    ...
-    # (existing angles / start_samples / stop_samples draws unchanged)
+- **`perpendicular_pushes: bool`** — the push travels along `±blade_normal(θ)`
+  instead of toward an independently drawn end point.
+- **`push_length: float | None`** — every push travels exactly this distance, so
+  a whole dataset supports a *single* transition operator.
 
-    if perpendicular_pushes:
-        # Plate long axis is (cos θ, sin θ) — see how sample_space_x is built
-        # above — so a push normal to the blade face travels along
-        # ±(−sin θ, cos θ). Reuse the already-drawn stop only for its DISTANCE,
-        # so the push-length marginal is exactly what it was before; the ray-box
-        # truncation in equalize_travel_distance keeps the push inside its box.
-        sign  = torch.where(torch.rand(n_total, device=gs.device) < 0.5, -1.0, 1.0)
-        n_hat = sign.unsqueeze(-1) * torch.stack(
-            [-torch.sin(angles), torch.cos(angles)], dim=1)
-        target = (stop_samples - start_samples).norm(dim=-1, keepdim=True)
-        stop_samples, _ = equalize_travel_distance(
-            start_samples, start_samples + n_hat, low, high, target)
-```
+The geometry itself lives in [`Genesis/action_sampling.py`](../Genesis/action_sampling.py)
+(`blade_normal`, `sampling_box`, `constrain_push`, `relative_blade_angle`) —
+pure torch, no Genesis import, so it is unit-testable without a GPU, which is
+the same reason `equalize_travel_distance` already lives there.
+`SandboxManipulation._constrain_push_geometry` is the thin wrapper.
 
-Why this shape rather than sampling a length directly:
+Three decisions inside `constrain_push` worth recording, because two of them are
+corrections to what this plan originally specified:
 
-- It **reuses `equalize_travel_distance`**
-  ([`Genesis/action_sampling.py`](../Genesis/action_sampling.py)) for the ray-box
-  truncation, which is already written and tested. No new geometry code.
-- It **preserves the push-length distribution exactly** — the existing
-  "difference of two uniforms in a yaw-dependent box" marginal is kept, so v1
-  datasets stay length-comparable to every dataset already collected. Sampling
-  `l ~ U(0, t_max)` instead would silently change it.
-- `sign` matters: without it, every push travels along `+n̂`, and since
-  `θ ∈ (−π/2, π/2)` the normal always has `cos θ > 0` — **every push would go in
-  the `+y` half-plane**. That would be a badly biased dataset, and the bug would
-  be invisible in aggregate statistics.
+**(a) The `±` sign is randomized, and that is not cosmetic.** Yaw is drawn from
+`(−π/2, π/2)`, so `cos θ > 0` always; taking `+n̂` unconditionally would send
+**every push into the `+y` half-plane**. No aggregate statistic would reveal it.
 
-**Ordering hazard — the one thing to get right.** `placement_aware`
-(`_apply_placement_aware_starts`, line 1687) **overrides both the start point and
-the yaw**. So the perpendicular rewrite must run *after* it, or the yaw changes
-underneath and perpendicularity silently breaks. `shared_travel_distance` is safe
-either side, since it rescales along the existing direction. Correct order:
+**(b) Where the push does not fit, the START is nudged — the push is never
+shortened.** This plan originally said to truncate at the tray boundary, reusing
+`equalize_travel_distance`. That is wrong in both directions:
 
-```
-draw angles / starts / stops  →  placement_aware  →  perpendicular_pushes  →  shared_travel_distance
-```
+- For a *fixed* length, a shortened push silently leaves the requested bin and
+  contaminates the single-operator fit — the one thing this dataset must not
+  contain.
+- For a *free* length, shortening distorts the push-length distribution this
+  restriction is supposed to leave untouched. **Measured on 20k draws:
+  truncation would hit 22.5% and drag the mean push from 105 mm to 94 mm.**
 
-A test asserting `|cos(angle_between(push_dir, blade_normal))| < 1e-5` under all
-four flag combinations is what keeps this honest.
+Nudging instead: the starts from which a displacement `d` stays in the box are
+`[low + relu(−d), high − relu(d)]`; clamping into that keeps yaw, direction and
+length all exact, at a start displacement of at most `|d|`. Measured rates in
+the 270 mm tray:
 
-### 7.3 Flag threading — follow the `--placement-aware` pattern exactly
+| restriction | starts nudged | truncated | length preserved |
+|---|---|---|---|
+| perpendicular, free length | 22.2% | 0.4% | mean 105 mm → 105 mm |
+| perpendicular, `push_length=0.04` | 2.5% | **0%** | exact |
+| perpendicular, `push_length=0.10` | 15.2% | **0%** | exact |
+
+Truncation is now only possible when the requested travel exceeds the tray
+extent along the normal — for a fixed length, only if the push is longer than
+the tray. It is logged as a `WARNING` regardless of debug mode.
+
+**(c) Why nudging is needed at all is not obvious, and the first estimate was
+wrong.** A 40 mm push in a 270 mm tray "obviously" fits from anywhere — that is
+true only for an *axis-aligned* normal. Along an **oblique** normal the box
+extent through a start near a corner is bounded by whichever axis the diagonal
+reaches first, and can be well under 2 × length. The unit test suite caught this
+(2.3% of draws), not review.
+
+### 7.3 Flag threading
+
+Follows the `--placement-aware` pattern exactly:
 
 | File | Change |
 |---|---|
-| `Genesis/sandbox_manipulation_clean.py:1576` | the kwarg + the 8 lines above |
-| `Genesis/sandbox_manipulation_clean.py:1935` | `collect_data_samples(..., perpendicular_pushes=False)` → pass through, **and add it to `self._config["data_collection"]`** (line ~1961) so the constraint is recorded in the saved dataset metadata — otherwise a v1 and a non-v1 dataset are indistinguishable on disk |
-| `Genesis/data_collection_clean.py:116` | one `parser.add_argument("--perpendicular-pushes", action="store_true")` + pass at line 271 |
-| `Genesis/run_collection.py:339` | one `if spec["perpendicular_pushes"]: cmd += ["--perpendicular-pushes"]` |
+| [`Genesis/action_sampling.py`](../Genesis/action_sampling.py) | the geometry: `blade_normal`, `sampling_box`, `constrain_push`, `relative_blade_angle`, plus `ray_box_max_travel` factored out of `equalize_travel_distance` |
+| [`Genesis/sandbox_manipulation_clean.py`](../Genesis/sandbox_manipulation_clean.py) | the two kwargs on `generate_action_samples` + `_constrain_push_geometry`; same pass-through on `collect_data_samples`, **recorded in `_config["data_collection"]`** so a restricted dataset is identifiable on disk |
+| [`Genesis/data_collection_clean.py`](../Genesis/data_collection_clean.py) | `--perpendicular-pushes`, `--push-length METRES` |
+| [`Genesis/run_collection.py`](../Genesis/run_collection.py) | plan pass-through (`spec.get(...)`, so existing plan YAMLs are unaffected) |
+| [`Genesis/configs/collection_foresight_single_operator.yaml`](../Genesis/configs/collection_foresight_single_operator.yaml) | the targeted single-operator collection plan |
 
-The MPC side gets the same restriction for free from `ActionGridSampler` (Step 4):
-enumerate `(start_x, start_y, θ, l)` and *derive* the plate yaw as `θ ± 90°`. The
-other samplers are untouched, so nothing existing changes behaviour.
+**Ordering hazard, handled.** `placement_aware` (`_apply_placement_aware_starts`)
+overrides both the start point *and* the yaw, so the restriction runs **after**
+it — otherwise the yaw changes underneath and perpendicularity silently breaks.
+`_constrain_push_geometry` also *recomputes* the sampling box from the current
+angles rather than reusing the caller's, since the caller's box was built for
+the pre-placement yaw. `shared_travel_distance` is skipped entirely when
+`push_length` is set: the length is already shared by construction, and
+re-deriving the batch target from env 0's own travel would drag every other env
+down to it. Correct order:
+
+```
+draw angles / starts / stops  →  placement_aware  →  constrain_push  →  shared_travel_distance
+```
+
+The MPC side gets the same restriction for free from `ActionGridSampler`
+(Step 4): enumerate `(start_x, start_y, θ, l)` and *derive* the plate yaw as
+`θ ± 90°`. The other samplers are untouched.
+
+**Verified end-to-end** (2 envs × 2 samples, 20 cubes, `--push-length 0.04
+--perpendicular-pushes`): every saved transition is 40.0 mm and perpendicular to
+within 6e-8 rad, and the constraint appears in the saved config.
 
 ### 7.4 v1 → v2: what the extra DOF actually costs
 

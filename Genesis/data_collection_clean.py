@@ -126,6 +126,22 @@ def parse_args():
              "penalty at 8 envs). Sharing it costs only within-batch variation "
              "in one of five action dimensions.")
     parser.add_argument(
+        "--perpendicular-pushes", action="store_true",
+        help="push along the blade's face normal instead of in an independently "
+             "drawn direction. This is the planar-pushing convention and it "
+             "collapses the 5-DOF action to 4-DOF, which is what the "
+             "switched-linear visual-foresight baseline assumes (see "
+             "docs/linear_visual_foresight_baseline.md). The push-length "
+             "distribution is unchanged.")
+    parser.add_argument(
+        "--push-length", type=float, default=None, metavar="METRES",
+        help="fix every push's travel distance. With --perpendicular-pushes "
+             "this collects a dataset supporting a SINGLE transition operator "
+             "(one length bin, one canonical frame), which is the targeted "
+             "collection the visual-foresight baseline needs first. Pushes that "
+             "cannot reach the length inside the tray are truncated and "
+             "reported — check that count is 0 before fitting.")
+    parser.add_argument(
         "--constant-params", action="store_true",
         help="use one fixed material setting instead of sweeping the "
              "friction x density x box-friction grid (100 batches). Values "
@@ -273,6 +289,8 @@ def main():
                             path=out_path,
                             placement_aware=args.placement_aware,
                             shared_travel_distance=not args.independent_travel_distance,
+                            perpendicular_pushes=args.perpendicular_pushes,
+                            push_length=args.push_length,
                         )
                     except RuntimeError as e:
                         print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")

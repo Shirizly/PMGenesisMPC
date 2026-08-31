@@ -1,0 +1,86 @@
+# Targeted collection for ONE switched-linear transition operator.
+#
+#   python -m Genesis.run_collection \
+#       --plan configs/collection_foresight_single_operator.yaml
+#
+# Purpose (docs/linear_visual_foresight_baseline.md §7): the switched-linear
+# visual-foresight baseline fits one matrix A_l per push length, in a frame
+# where the blade face is normal to the push. This plan collects the data for a
+# SINGLE such (length, perpendicular) cell, so the first operator can be fitted
+# and falsified before any of the multi-bin machinery exists.
+#
+# Everything except the pile state is held fixed on purpose: one push length,
+# one direction convention, one pile size, one material. Any variance left in
+# the transitions is variance in the STATE, which is exactly what A_l has to
+# explain.
+
+base_config: basic.yaml
+output_root: data/foresight/single_operator
+
+material:
+  shape: cube
+  particle_size: 0.005
+
+  # Constant, and matching Genesis/configs/measured/throughput_optimal.yaml so
+  # the n_envs lookup below is valid for the material actually being run.
+  particle_friction: 0.3
+  particle_density: 1000.0
+  box_friction: 0.3
+
+plan:
+  # ONE pile size. The paper's operators are fitted per length bin across a
+  # fixed scene configuration; adding pile sizes here would mix physics regimes
+  # into a single operator, which is the disjoint-physics test (corl/cube), not
+  # this one.
+  n_objects: [50]
+
+  n_envs: Genesis/configs/measured/throughput_optimal.yaml
+
+  # 64 envs x 5 samples x 8 batches = 2560 transitions.
+  #
+  # Sizing rationale — this is the number that matters, so it is spelled out.
+  # The operator is fitted row-wise (Suh & Tedrake eq. 10): each of the N^2
+  # output pixels gets its own least-squares problem with N^2 unknowns. At the
+  # planned 32x32 fit resolution that is 1024 unknowns per row, so the paper's
+  # own 800 training pairs left every row UNDERDETERMINED — which is very
+  # likely why their non-negativity constraint helped as much as it did.
+  # 2560 transitions (~2050 after a 20% holdout) makes each row's system
+  # comfortably overdetermined instead, at ~8 minutes of wall clock.
+  samples_per_env: 5
+  n_batches: 8
+
+  state_library_settles: 10
+
+  placement_aware: true
+
+  # --- what makes this a single-operator dataset ---
+
+  # Push along the blade's face normal: the planar-pushing convention the
+  # baseline assumes, and what makes a single canonical frame well defined.
+  perpendicular_pushes: true
+
+  # One push length, in metres.
+  #
+  # For reference, the UNRESTRICTED sampler's push length (measured over 20k
+  # draws with this tray and blade) is mean 105 mm, max 280 mm — so a 5-bin
+  # ladder in the paper's style would be roughly 40/80/120/160/200 mm, and
+  # 40 mm is its shortest bin.
+  #
+  # The shortest bin is a deliberate choice for the FIRST operator, not a
+  # convenience: a short push perturbs the pile least, which is where the
+  # quasi-static, mass-preserving, locally-linear assumptions the method rests
+  # on are most likely to hold. If the operator cannot beat persistence here,
+  # it will not do better at 200 mm. It also equals the blade length, making
+  # the swept rectangle square. Collect further cells by copying this file with
+  # a different value; nothing else changes.
+  #
+  # Two mechanical notes:
+  #   * With the length fixed, every env travels the same distance by
+  #     construction, so the batch step-count coupling that
+  #     `shared_travel_distance` exists to remove is gone outright. The
+  #     measured n_envs optimum above (taken WITH sharing on) still applies.
+  #   * Where a 40 mm push would not fit inside the tray from the start point
+  #     drawn, the START is nudged rather than the push shortened — a shortened
+  #     push would silently leave this length bin. Measured: 2.5% of starts
+  #     nudged, 0% truncated. The collection log warns if anything truncates.
+  push_length: 0.04

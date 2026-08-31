@@ -194,6 +194,27 @@ Genesis/
                         the blind draw per sample when the free set is empty.
                         Genesis-free (torch/numpy/scipy), unit-tested in
                         tests/test_placement_sampling.py.
+  action_sampling.py     batch-aware action shaping AND action-space
+                        restriction, both pure torch (no `import genesis`),
+                        unit-tested in tests/test_action_sampling.py.
+                        Shaping: equalize_travel_distance /
+                        shared_batch_distance share one push length across a
+                        lockstep batch (the sweep is sized from the LONGEST
+                        travel, so independent lengths make every env run for
+                        the longest one's duration).
+                        Restriction: blade_normal / sampling_box /
+                        constrain_push / relative_blade_angle implement the
+                        perpendicular-push and fixed-push-length constraints
+                        that the switched-linear visual-foresight baseline
+                        needs (docs/linear_visual_foresight_baseline.md §7),
+                        exposed as generate_action_samples(
+                        perpendicular_pushes=, push_length=) and as
+                        data_collection_clean.py's --perpendicular-pushes /
+                        --push-length. ray_box_max_travel is the shared
+                        primitive. Where a constrained push would leave the
+                        tray the START is moved, never the push length —
+                        shortening would silently drop a transition out of
+                        its length bin.
   transition_buffer.py   TransitionBuffer — accumulates and saves the
                         before/after/action transitions push_and_record
                         records, in the same on-disk format
@@ -205,7 +226,14 @@ Genesis/
                         angle[K]) pattern that GenesisOracleEnv's rollout
                         batching mirrors. Does not call push_and_record (has
                         its own save path), so transition recording is a
-                        no-op here regardless of config.
+                        no-op here regardless of config. Action-space
+                        restrictions (--perpendicular-pushes, --push-length)
+                        are recorded in each batch's saved config, so a
+                        restricted dataset is identifiable on disk.
+  configs/collection_foresight_single_operator.yaml
+                        run_collection.py plan for the targeted collection of
+                        ONE switched-linear transition operator (one push
+                        length, perpendicular, one pile size / material).
   benchmark_n_envs.py    throughput sweep for picking simple_mpc.oracle_mpc's
                         n_envs default; run as `python -m Genesis.benchmark_n_envs`
                         (must run as a module from the repo root — see its
