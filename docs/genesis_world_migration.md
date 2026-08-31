@@ -162,12 +162,25 @@ RuntimeError: nvrtc: error: failed to open libnvrtc-builtins.so.13.0
 ```
 
 The correct library **is** present, at
-`site-packages/nvidia/cu13/lib/libnvrtc-builtins.so.13.0` — it simply is not the
-one being found. Workaround:
+`site-packages/nvidia/cu13/lib/libnvrtc-builtins.so.13.0` — it simply is not on
+any search path, and `libnvrtc.so.13` carries no RUNPATH, so a same-directory
+sibling is not found either. Neither package can be removed: **`gs-madrona`
+requires the cu12 one** and torch needs the cu13 one.
+
+**Fix, once per machine:**
 
 ```bash
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.10/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH"
+conda activate pme
+bash scripts/fix_nvrtc.sh            # --check to report without changing anything
 ```
+
+It probes whether torch's JIT actually compiles, and if not installs a conda
+`activate.d` hook putting the right directory on `LD_LIBRARY_PATH`, then
+re-verifies. Idempotent, contained to the environment, and undone by the
+matching `deactivate.d` hook. The path has to be set before the process starts —
+the dynamic loader reads it once — so this cannot be fixed from inside Python;
+preloading the library with `ctypes.CDLL` was tried and does not work, because
+this lookup does not consult already-loaded objects.
 
 **This is easy to miss, because it only fires on code paths that actually invoke
 the JIT.** It was found via `record_simulation_video.py`: `geom.z_up_to_R` is
