@@ -1,0 +1,379 @@
+{
+  "_readme": "Machine-readable results for the linear-visual-foresight investigation. Human-readable narrative and caveats: docs/linear_foresight_findings.md. Where this file and reports/linear_foresight_report.md disagree, this file and the findings doc win (the report is a chronological log containing superseded numbers).",
+  "branch": "VisualForesight",
+  "paper": "arXiv:2002.09093 (Suh & Tedrake 2020)",
+  "updated": "2026-08-31",
+  "datasets": {
+    "scattered_L040": {
+      "config": "configs/dataset/genesis_foresight_L040_full.yaml",
+      "n_transitions": 7680,
+      "n_files": 24,
+      "n_particles": 50,
+      "spawn": "blind RSA over whole tray",
+      "actions": "blind, perpendicular, 40mm fixed",
+      "packing_mean_nn_cube_widths": 2.05,
+      "layer0_fraction": 1.0,
+      "pile_in_swath_fraction": 0.14,
+      "band_displacement_mm": {
+        "mean": 18.9,
+        "p50": 16.4,
+        "p95": 41.9
+      }
+    },
+    "piled_pile30": {
+      "config": "configs/dataset/genesis_foresight_pile30.yaml",
+      "n_transitions": 1872,
+      "n_files": 29,
+      "n_particles": 30,
+      "spawn": "pile_extent=0.015 centred, 3 dropped layers",
+      "actions": "pile-aware, perpendicular, 40mm nominal",
+      "packing_mean_nn_cube_widths": 1.09,
+      "layer0_fraction": 0.904,
+      "pile_in_swath_fraction": 0.67,
+      "band_displacement_mm": {
+        "mean": 23.4,
+        "sd": 6.12
+      },
+      "known_contamination": "collected before the start-clamp fix: ~36% of blade starts outside the workspace box, ~3.3% of pushes travelled ~0mm. Biases AGAINST the linear result, so findings are conservative."
+    }
+  },
+  "headline_variance_decomposition": {
+    "_metric": "R2 on per-push mean displacement in the swept band, 5-fold CV grouped by run. linear=RidgeCV, boosted=HistGradientBoosting, features=OCC (occupancy-grid-visible only).",
+    "scattered_blind": {
+      "linear": 0.576,
+      "boosted": 0.836,
+      "linear_share": 0.69,
+      "n": 7680
+    },
+    "piled_contact_sampled": {
+      "linear": 0.785,
+      "boosted": 0.852,
+      "linear_share": 0.92,
+      "n": 1872
+    },
+    "piled_forward_disp": {
+      "linear": 0.774,
+      "boosted": 0.839,
+      "linear_share": 0.92
+    },
+    "piled_max_disp": {
+      "linear": 0.856,
+      "boosted": 0.908,
+      "linear_share": 0.94
+    }
+  },
+  "the_key_finding_contact_stratification": {
+    "_metric": "Same R2, but computed WITHIN strata of contact amount (particles in blade swath) on the SCATTERED dataset. Shows the nonlinearity is almost entirely dependence on this one scalar.",
+    "_source": "density_stratified.py --by contact --bins 4",
+    "strata": [
+      {
+        "particles_in_swath": 1.24,
+        "n": 1829,
+        "linear": 0.708,
+        "boosted": 0.781,
+        "linear_share": 0.91
+      },
+      {
+        "particles_in_swath": 3.51,
+        "n": 1909,
+        "linear": 0.822,
+        "boosted": 0.797,
+        "linear_share": 1.03
+      },
+      {
+        "particles_in_swath": 5.48,
+        "n": 1789,
+        "linear": 0.81,
+        "boosted": 0.737,
+        "linear_share": 1.1
+      },
+      {
+        "particles_in_swath": 8.3,
+        "n": 2153,
+        "linear": 0.782,
+        "boosted": 0.718,
+        "linear_share": 1.09
+      }
+    ]
+  },
+  "pile_hypothesis_negative": {
+    "_metric": "Same R2 within strata of local packing (mean nearest-neighbour distance among swath particles, cube widths) on the SCATTERED dataset. Linear share does NOT rise with density.",
+    "_source": "density_stratified.py --by packing",
+    "strata": [
+      {
+        "nn_cube_widths": 1.21,
+        "n": 2560,
+        "linear": 0.656,
+        "boosted": 0.858,
+        "linear_share": 0.76
+      },
+      {
+        "nn_cube_widths": 2.03,
+        "n": 2560,
+        "linear": 0.631,
+        "boosted": 0.75,
+        "linear_share": 0.84
+      },
+      {
+        "nn_cube_widths": 2.69,
+        "n": 2560,
+        "linear": 0.544,
+        "boosted": 0.727,
+        "linear_share": 0.75
+      }
+    ]
+  },
+  "control_relevant_dV": {
+    "_metric": "R2 on dV = change in mean particle-to-goal distance (mm), OCC features, 5-fold grouped CV. Their eq.3 particle Lyapunov function, so free of grid resolution and the warp.",
+    "_caveat": "An earlier draft reported 0.89-0.99 shares from n=464; those did NOT survive 4x more data. Use these.",
+    "scattered_n7680": {
+      "center": {
+        "linear": 0.522,
+        "boosted": 0.75,
+        "linear_share": 0.7
+      },
+      "corner": {
+        "linear": 0.339,
+        "boosted": 0.897,
+        "linear_share": 0.38
+      },
+      "stripe": {
+        "linear": 0.24,
+        "boosted": 0.73,
+        "linear_share": 0.33
+      },
+      "point": {
+        "linear": 0.648,
+        "boosted": 0.863,
+        "linear_share": 0.75
+      }
+    },
+    "piled_n1856": {
+      "center": {
+        "linear": 0.486,
+        "boosted": 0.715,
+        "linear_share": 0.68
+      },
+      "corner": {
+        "linear": 0.404,
+        "boosted": 0.923,
+        "linear_share": 0.44
+      },
+      "stripe": {
+        "linear": 0.292,
+        "boosted": 0.402,
+        "linear_share": 0.73
+      },
+      "point": {
+        "linear": 0.687,
+        "boosted": 0.801,
+        "linear_share": 0.86
+      }
+    }
+  },
+  "control_cost_of_linearity": {
+    "_metric": "dV actually realised (mm, negative = pile moved toward goal) when picking the best of 16 candidates by predicted dV. Scattered dataset.",
+    "center": {
+      "random": 0.353,
+      "linear": 0.04,
+      "boosted": 0.014,
+      "oracle": -0.04
+    },
+    "corner": {
+      "random": 0.453,
+      "linear": -0.438,
+      "boosted": -1.424,
+      "oracle": -1.546
+    },
+    "stripe": {
+      "random": 0.403,
+      "linear": -0.052,
+      "boosted": -0.476,
+      "oracle": -0.702
+    },
+    "point": {
+      "random": 0.818,
+      "linear": -0.104,
+      "boosted": -0.579,
+      "oracle": -0.75
+    }
+  },
+  "pixel_operator_never_beats_persistence": {
+    "_metric": "rms in the swept band, leave-one-run-out, occupancy units. Lower is better. Fold sd ~0.014, so all differences here are within noise.",
+    "_conclusion": "Every operator variant is indistinguishable from persistence. Tested across crop in {1.0,0.75,0.5,0.375,0.25}, res in {16,32,48,64}, native data res in {32,64}, ridge lambda over 8 decades, OLS, non-negative FISTA, blur in {0,1.0,1.5}, whole-image and swept-region metrics, single and 3-bin switched.",
+    "best_config_crop0.25_D256_MoverD_8.3": {
+      "persistence": 0.12146,
+      "identity_warp_only": 0.12149,
+      "switched_shrink_to_I": 0.12162,
+      "single_shrink_to_I": 0.12169,
+      "switched_nonneg": 0.12179,
+      "heuristic_cumulative": 0.13891
+    },
+    "per_bin_gap_to_identity_crop0.5": {
+      "_note": "positive = better than warped persistence. The operator only helps in the high-contact bin.",
+      "barely": -0.0042,
+      "mildly": 0.0015,
+      "significantly": 0.0032
+    }
+  },
+  "refuted_hypotheses": {
+    "plate_skimming": {
+      "verdict": "refuted",
+      "evidence": {
+        "vertical_overlap_mm": 2.49,
+        "cubes_engaged_fraction": 1.0,
+        "band_displacement_mm_mean": 18.9,
+        "vertical_displacement_mm": 0.01
+      }
+    },
+    "binary_occupancy_loses_height": {
+      "verdict": "refuted",
+      "evidence": {
+        "layer0_fraction": 1.0,
+        "note": "pile is one layer deep; no height information exists to lose. Recommendation to un-clamp particles_to_occupancy is WITHDRAWN."
+      }
+    },
+    "dynamics_are_stochastic": {
+      "verdict": "refuted",
+      "evidence": {
+        "displacement_R2_boosted": 0.836,
+        "gain_from_exact_particle_positions": 0.04,
+        "gain_from_cube_yaw": 0.0
+      }
+    },
+    "mass_not_conserved": {
+      "verdict": "refuted",
+      "evidence": {
+        "mass_ratio_mean": 0.9959,
+        "p05": 0.984,
+        "p95": 1.0041,
+        "note": "canonical-frame mass change of -0.80 is mass leaving the rotated window, not physical loss. Measure mass in the WORLD frame."
+      }
+    }
+  },
+  "real_obstruction_warp_resampling": {
+    "_finding": "On raw binary occupancy of 5mm cubes the SE(2) rotation costs more accuracy than one push changes. A sigma~1px blur removes it entirely. Treat smoothing as a PRECONDITION of the method.",
+    "high_frequency_energy_laplacian_over_occ": {
+      "raw": 3.05,
+      "blur0.5": 1.96,
+      "blur1.0": 0.68,
+      "blur1.5": 0.38
+    },
+    "identity_minus_persistence_rms": {
+      "raw": 0.01,
+      "blur1.0": -6e-05
+    },
+    "warp_mass_preservation": "+-0.00%"
+  },
+  "action_distribution_covariate_shift": {
+    "_finding": "Independent of this baseline, affects every learned model in the repo. Both MPC variants DERIVE blade yaw as atan2(dy,dx)+pi/2, so deployment is always perpendicular; training data is not.",
+    "relative_blade_angle_median_rad": {
+      "corl_cube_training": 0.657,
+      "oneset_training": 0.66,
+      "mpc_executed": 0.0
+    },
+    "near_perpendicular_fraction": {
+      "corl_cube_training": 0.075,
+      "oneset_training": 0.079,
+      "mpc_executed": 0.996
+    },
+    "n_actions": {
+      "corl_cube_training": 3986,
+      "oneset_training": 5716,
+      "mpc_executed": 77152
+    }
+  },
+  "practical_constraints": {
+    "piled_collection_cost": "~4 min per 2-push batch vs ~0.18 s/transition scattered at 64 envs, i.e. ~100x worse per transition. Post-push settle dominates and CANNOT be damped without biasing s'. Library settle CAN: --state-library-damping 15 took it from ~25 min to seconds.",
+    "pile_outgrows_workspace_box": {
+      "pile_radius_p95_mm": 34.6,
+      "pile_radius_max_mm": 54.0,
+      "blade_box_half_extent_mm": [
+        23.5,
+        42.5
+      ],
+      "starts_outside_box_fraction": 0.358,
+      "pushes_near_zero_fraction": 0.033,
+      "fix": "clamp start into box + push_length 0.02"
+    },
+    "n30_cannot_form_deep_pile": "3750 mm^3 of cubes at ~30deg angle of repose settles into a dense monolayer (90% layer 0) whatever the spawn does. Depth needs 100-150 particles or a smaller container.",
+    "split_noise_floor": "With 8 files the holdout is one file and fold-to-fold rms sd is ~0.004, several times the effects being compared. Two apparent wins were noise. ALWAYS use loro_foresight.py, paired fold by fold."
+  },
+  "open_bugs": {
+    "interfaces_md_grid_convention": "INTERFACES.md 4.1 says dim0=world_y. Brute-forcing all 24 orientation hypotheses against the dataset's own rasterised plate channel puts dim0=world_x at 3.4px median offset vs 9.7px for the documented reading. fit_linear_foresight.py re-checks every run and aborts on mismatch. UNRESOLVED - needs confirmation of which tensor the doc describes.",
+    "variance_decomposition_PART_features": "The PART/yaw feature sets return NEGATIVE linear R2 at n>1000 due to sentinel outliers (1e3 clamped to 1.0) for empty swaths. The OCC set is clean and is the one used for all reported numbers. Fix sentinels before using PART."
+  },
+  "next_experiments_ranked": [
+    {
+      "id": "H1",
+      "what": "100-150 particles, compact pile, contact-aware 20mm pushes; re-test the PIXEL operator",
+      "why": "decides whether the paper's per-pixel result is reproducible in 3-D at all. Continuum limit is the leading explanation for their success.",
+      "cost": "overnight"
+    },
+    {
+      "id": "attribution",
+      "what": "contact-aware sampling on SCATTERED geometry (--pile-aware-actions without --pile-extent)",
+      "why": "turns the inferential attribution of the headline result into a measured one",
+      "cost": "~15 min"
+    },
+    {
+      "id": "descriptor_level",
+      "what": "switch dmdc_baseline.py's operator on contact amount; express the Lyapunov cost as a linear functional in the descriptor basis (ideas_log I1)",
+      "why": "well-determined at current data volumes, unlike a million-parameter pixel operator",
+      "cost": "~1 day"
+    },
+    {
+      "id": "H4",
+      "what": "--particle-shape sphere",
+      "why": "cube tumbling is a discrete nonlinearity with no linear-transport analogue; spheres roll instead",
+      "cost": "~1 h"
+    },
+    {
+      "id": "closed_loop",
+      "what": "build the greedy Lyapunov controller and score the descent curve",
+      "why": "the paper's actual metric. Do NOT score on one-step image error.",
+      "cost": "~1 day"
+    }
+  ],
+  "dV_direction_features_close_the_gap": {
+    "_finding": "The residual dV nonlinearity is the push DIRECTION relative to the goal. Adding cos/sin(heading), cos/sin(2*heading), push-dot-outward-radial, pile offset magnitude, and their interaction raises the linear share substantially. This is the same mechanism as the paper's SE(2) canonical push frame, which factors direction out by construction.",
+    "_dataset": "piled_pile30, n=1856, 5-fold grouped CV",
+    "center": {
+      "occ_only": {
+        "linear": 0.486,
+        "boosted": 0.715,
+        "linear_share": 0.68
+      },
+      "plus_direction": {
+        "linear": 0.661,
+        "boosted": 0.803,
+        "linear_share": 0.82
+      }
+    },
+    "corner": {
+      "occ_only": {
+        "linear": 0.404,
+        "boosted": 0.923,
+        "linear_share": 0.44
+      },
+      "plus_direction": {
+        "linear": 0.851,
+        "boosted": 0.941,
+        "linear_share": 0.9
+      }
+    },
+    "point": {
+      "occ_only": {
+        "linear": 0.687,
+        "boosted": 0.801,
+        "linear_share": 0.86
+      },
+      "plus_direction": {
+        "linear": 0.812,
+        "boosted": 0.889,
+        "linear_share": 0.91
+      }
+    }
+  },
+  "unified_conclusion": "A model class that is ~90% linear on this task needs three ingredients: (1) the paper's SE(2) canonical push frame, which removes direction dependence; (2) the paper's switch on push length; (3) conditioning on CONTACT AMOUNT, which the paper got for free from its per-action collection protocol and which blind sampling destroys. Missing (3) cost 31% of the signal; missing direction-representation cost up to 46% on off-centre goals."
+}
