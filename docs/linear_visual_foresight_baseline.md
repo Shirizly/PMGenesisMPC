@@ -3,10 +3,15 @@
 **Status:** IN PROGRESS on branch `VisualForesight`. **Stages 0–2 are done**;
 results and the answered open questions are in
 [`reports/linear_foresight_report.md`](../reports/linear_foresight_report.md).
-Headline: the stage-2 gate (§10) **fails** — nothing beats persistence — and the
-obstruction is not the operator but the SE(2) rotation resampling on a
-pixel-scale-speckle occupancy field. Stage 3 (the Lyapunov closed loop, §4
-steps 3–5) is deliberately **not** built: the gate says it would measure noise.
+Headline: the stage-2 gate (§10) fails *in aggregate*, but stratifying by how
+much each push actually changed shows the operator **beats persistence on the
+top half of the distribution** (+0.07, +0.18 explained) and loses only where the
+push barely touched the pile — so the aggregate result is an artifact of random
+action sampling, not of the model. Two real obstructions were found: the SE(2)
+rotation resampling on a pixel-scale-speckle occupancy field (fixed by σ≈1 px
+smoothing), and the fact that one-step error over random actions is the wrong
+instrument for a controller's model. Stage 3 (the Lyapunov closed loop) is not
+built yet but is now recommended.
 Corrections to this plan that the results forced are marked **[SUPERSEDED]**
 inline.
 **Source paper:** [`2002.09093v3.pdf`](2002.09093v3.pdf) — H.J.T. Suh & R. Tedrake,

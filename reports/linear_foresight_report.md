@@ -15,7 +15,7 @@ Lyapunov controller) not attempted.
 |---|---|---|---|
 | Q1 | Does the 5th action DOF (independent plate yaw) matter? | **No — and it was never available.** Every MPC variant *derives* the yaw as `atan2(dy,dx) + π/2`. Measured over 77k executed pushes: 99.6% perpendicular. Training data: 7.5%. **v1 costs nothing, and the existing pipeline has a train/deploy covariate shift.** | High (87k actions) |
 | Q2 | Does the pixel operator beat the geometric heuristics? | **Only once the field is smoothed** — then yes, replicating the paper's comparative claim (`linear-nonneg` 0.1241 vs `cumulative` 0.1263, `spread` 0.1362). On raw occupancy it loses to both. | Medium |
-| Q3 | Does it beat **persistence** (the stage-2 gate)? | **No, in all 4 configurations × 2 metrics.** Best linear 0.1241 vs persistence 0.1105. Neither do the heuristics. | High |
+| Q3 | Does it beat **persistence** (the stage-2 gate)? | **In aggregate no; where there is signal, yes.** Stratified by actual change: it *beats* persistence on the top two quartiles (explains +0.07, +0.18) and loses badly on the bottom two. The aggregate verdict is an artifact of the action distribution, not the model — see §2.1. | High |
 | Q4 | Is mass conserved (the predicted failure mode)? | **Yes — ratio 0.996.** My hypothesis was wrong; mass is not the obstruction. | High |
 | Q5 | Does non-negativity beat plain ridge (their Fig. 7)? | **In 3 of 4 configurations.** Directionally replicated, not universal. | Medium |
 | Q6 | Does the uniform-deposit-ahead assumption hold in 3-D granular? | **Qualitatively yes** — their Fig. 5 structure reproduces: depletion across the swept band, deposition peaking just ahead. | Medium |
@@ -124,6 +124,39 @@ That is 8 estimator variants × 4 data configurations × 2 metric regions, and
 persistence ranks first in every one.
 
 ---
+
+### 2.1 The aggregate verdict is an artifact of the action distribution
+
+Splitting the held-out set into quartiles by how much the push *actually*
+changed the swept region (`‖I₁−I₀‖` inside the mask), native 64, σ=1.0,
+`linear-nonneg`:
+
+| change quartile | n | persistence rms | linear rms | cumulative rms | **linear explains** | cumulative explains |
+|---|---|---|---|---|---|---|
+| Q1 (‖Δ‖ 0.0–1.6) | 80 | 0.0092 | 0.0880 | 0.0501 | −8.53 | −4.43 |
+| Q2 (1.6–3.4) | 80 | 0.0856 | 0.1066 | 0.0987 | −0.24 | −0.15 |
+| Q3 (3.4–5.2) | 80 | 0.1404 | **0.1304** | 0.1450 | **+0.07** | −0.03 |
+| Q4 (5.2–8.7) | 80 | 0.2069 | **0.1704** | 0.2114 | **+0.18** | −0.02 |
+
+**The operator works where there is something to predict.** On the top half of
+the distribution it beats persistence *and* beats the `cumulative` heuristic —
+which stays at or below zero in every quartile, i.e. never beats persistence
+anywhere. On the bottom quartile the push barely touched the pile, persistence
+is nearly exact (rms 0.009), and any model that moves mass is punished
+enormously (−8.5).
+
+This reframes the gate result. The aggregate failure is not the operator failing
+to learn the physics; it is **a quarter of randomly-sampled 40 mm pushes barely
+contacting the pile**, where "predict no change" is unbeatable. That regime is
+over-represented in random collection and *under*-represented at deployment: an
+MPC only ever executes actions it expects to help, i.e. actions that contact the
+pile. So an unstratified one-step error over randomly-sampled actions is the
+wrong instrument for judging a controller's dynamics model.
+
+Caveat: 80 samples per quartile from 3 held-out runs, single push length. The
+trend is monotone across all four quartiles and the Q4 margin is large
+(+0.18 vs −0.02), but this wants confirming on the full 2 560 and at a second
+push length before being leaned on.
 
 ## 3. Q1 in full: the 5th DOF was never in play
 
@@ -269,17 +302,18 @@ Raw logs: `final_fits.log`, `collect_L040.log` (session scratchpad).
 
 ## 9. Recommended next steps, in order
 
-1. **Do not build the closed-loop controller yet.** The gate says the operator
-   does not beat persistence, so a Lyapunov descent curve would measure noise.
-2. **Test the regime hypothesis first — it is the cheapest thing left and it
-   determines whether anything here is salvageable.** Persistence winning is
-   consistent with "one 40 mm push at n=50 barely changes the image". Collect at
-   `--push-length 0.08` and at a denser pile (n=150) and re-run the identical
-   fit. If `explained` goes positive, the method works and 40 mm was simply
-   below the signal floor. If it stays negative at 2× the push length, per-pixel
-   prediction of this pile is not linearly identifiable and the descriptor-level
-   route (`dmdc_baseline.py`, which *does* beat persistence on COM/moments)
-   is the right level to work at.
+1. **Confirm §2.1 on the full 2 560 transitions and at a second push length**
+   (`--push-length 0.08`). This is now the pivotal experiment: §2.1 says the
+   operator beats persistence wherever the push does real work, which would
+   mean the method is viable here and the aggregate gate result is a
+   measurement artifact. It is ~15 min of collection plus one fit.
+2. **Then build the closed loop after all** — but score it on the Lyapunov
+   descent curve, not on one-step error. §2.1 undercuts my earlier
+   recommendation to stop: a controller never samples the Q1 regime that drives
+   the aggregate failure, so one-step-vs-persistence was measuring the wrong
+   thing. Contact-aware action sampling
+   (`CollisionAwareActionSampler`, or the existing `placement_aware` machinery)
+   is what makes collection match deployment.
 3. **Adopt the identity-operator baseline permanently.** Any future image-space
    model — learned or otherwise — should be scored against both persistence and
    `A = I`, or resampling loss will be silently attributed to the model.
