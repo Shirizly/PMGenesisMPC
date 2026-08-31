@@ -208,6 +208,11 @@ Genesis/
                         lockstep batch (the sweep is sized from the LONGEST
                         travel, so independent lengths make every env run for
                         the longest one's duration).
+                        Pile-aware: pile_contact_starts places the blade one
+                        particle-width from the pile's near face, laterally
+                        aligned so its swath contains material, so every
+                        simulated push starts in contact and sweeps through the
+                        pile (docs/piled_collection.md).
                         Restriction: blade_normal / sampling_box /
                         constrain_push / relative_blade_angle implement the
                         perpendicular-push and fixed-push-length constraints
@@ -240,6 +245,14 @@ Genesis/
                         run_collection.py plan for the targeted collection of
                         ONE switched-linear transition operator (one push
                         length, perpendicular, one pile size / material).
+  configs/collection_pile30.yaml
+                        run_collection.py plan for 30 cubes as a COMPACT
+                        MULTI-LAYER pile with pushes that start in contact with
+                        it — see docs/piled_collection.md for the spawn
+                        (shuffle_particles(pile_extent=, pile_layers=)) and
+                        action (generate_action_samples(pile_aware=True)) modes
+                        and every flag that activates them. Both default OFF, so
+                        existing configs and datasets are unaffected.
   benchmark_n_envs.py    throughput sweep for picking simple_mpc.oracle_mpc's
                         n_envs default; run as `python -m Genesis.benchmark_n_envs`
                         (must run as a module from the repo root — see its

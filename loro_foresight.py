@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--blur", type=float, default=1.0)
     ap.add_argument("--bins", type=int, default=3)
     ap.add_argument("--iters", type=int, default=4000)
+    ap.add_argument("--folds", type=int, default=0,
+                    help="cap the number of leave-one-run-out folds (0 = all "
+                         "runs). A 90-file dataset does not need 90 fits.")
     ap.add_argument("--ridge", type=float, default=0.0,
                     help="shrinkage strength; the target is A=I, not A=0")
     args = ap.parse_args()
@@ -63,6 +66,8 @@ def main():
     o0, o1, s, e = d.occ_t.to(dev), d.occ_t1.to(dev), s.to(dev), e.to(dev)
     eid = d.episode_ids.to(dev)
     runs = eid.unique()
+    if args.folds and len(runs) > args.folds:
+        runs = runs[torch.linspace(0, len(runs) - 1, args.folds).long()]
     plate = 0.04 / 0.128 * W
     R, CR, B = args.res, args.crop, args.bins
     D = R * R

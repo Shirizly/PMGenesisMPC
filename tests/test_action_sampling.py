@@ -317,3 +317,118 @@ def test_relative_blade_angle_spans_plow_to_shear():
 
     assert abs(float(rel[0])) < 1e-6
     assert abs(float(rel[1]) - torch.pi / 2) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Pile-aware action sampling
+# ---------------------------------------------------------------------------
+
+from action_sampling import pile_contact_starts  # noqa: E402
+
+
+def _pile(n=30, extent=0.015, seed=0, batch=8):
+    """A compact heap at the origin, as the piled spawn produces."""
+    g = torch.Generator().manual_seed(seed)
+    return (torch.rand(batch, n, 2, generator=g) - 0.5) * 2 * extent
+
+
+def _headings(batch=8, seed=1):
+    g = torch.Generator().manual_seed(seed)
+    return torch.rand(batch, generator=g) * 2 * torch.pi
+
+
+def _along(pts, headings):
+    u = torch.stack([torch.cos(headings), torch.sin(headings)], dim=-1)
+    return (pts * u).sum(-1) if pts.dim() == headings.dim() + 1 else \
+        (pts * u.unsqueeze(-2)).sum(-1)
+
+
+def test_start_sits_one_clearance_behind_the_pile():
+    """The whole point: no sweep distance is spent reaching the pile."""
+    p, h = _pile(), _headings()
+    starts, n_in, ok = pile_contact_starts(
+        p, h, blade_half_length=0.02, clearance=0.005, min_swath=3,
+        generator=torch.Generator().manual_seed(2))
+
+    gap = _along(p, h).min(dim=-1).values - _along(starts, h)
+    # The nearest particle IN THE SWATH is exactly `clearance` ahead; the
+    # nearest particle overall can only be nearer still, never further.
+    assert (gap <= 0.005 + 1e-6).all()
+    assert (gap > 0).all(), "the blade must start behind the pile, not inside it"
+    assert ok.all()
+
+
+def test_swath_actually_contains_material():
+    p, h = _pile(), _headings()
+    _, n_in, ok = pile_contact_starts(
+        p, h, blade_half_length=0.02, clearance=0.005, min_swath=5,
+        generator=torch.Generator().manual_seed(3))
+    assert ok.all()
+    assert (n_in >= 5).all()
+
+
+def test_a_wider_blade_sweeps_more_of_the_pile():
+    p, h = _pile(), _headings()
+    g = lambda: torch.Generator().manual_seed(4)
+    _, narrow, _ = pile_contact_starts(p, h, blade_half_length=0.004,
+                                       clearance=0.005, generator=g())
+    _, wide, _ = pile_contact_starts(p, h, blade_half_length=0.04,
+                                     clearance=0.005, generator=g())
+    assert float(wide.float().mean()) > float(narrow.float().mean())
+
+
+def test_unreachable_min_swath_is_reported_not_hidden():
+    """A single isolated particle cannot fill a swath; the caller must know."""
+    p = torch.zeros(4, 1, 2)
+    _, n_in, ok = pile_contact_starts(p, _headings(batch=4), blade_half_length=0.02,
+                                      clearance=0.005, min_swath=5)
+    assert not ok.any()
+    assert (n_in == 1).all()
+
+
+def test_start_is_finite_even_when_min_swath_fails():
+    p = torch.zeros(4, 1, 2)
+    starts, _, ok = pile_contact_starts(p, _headings(batch=4), blade_half_length=0.02,
+                                        clearance=0.005, min_swath=5)
+    assert torch.isfinite(starts).all(), "must fall back, not return inf"
+    assert not ok.any()
+
+
+def test_push_direction_points_into_the_pile():
+    """Every particle in the swath must lie AHEAD of the start, so the sweep
+    travels through the pile rather than away from it."""
+    p, h = _pile(), _headings()
+    starts, _, _ = pile_contact_starts(
+        p, h, blade_half_length=0.02, clearance=0.005,
+        generator=torch.Generator().manual_seed(5))
+    a_p, a_s = _along(p, h), _along(starts, h)
+    assert (a_p.min(dim=-1).values > a_s).all()
+    # and the pile's far side is further ahead still, i.e. there is depth to sweep
+    assert (a_p.max(dim=-1).values > a_p.min(dim=-1).values).all()
+
+
+def test_clearance_is_respected_exactly():
+    p, h = _pile(batch=32), _headings(batch=32)
+    for clr in (0.002, 0.005, 0.01):
+        starts, n_in, ok = pile_contact_starts(
+            p, h, blade_half_length=0.02, clearance=clr, min_swath=3,
+            generator=torch.Generator().manual_seed(6))
+        # Distance from start to the nearest swath particle == clearance.
+        u = torch.stack([torch.cos(h), torch.sin(h)], dim=-1)
+        nv = torch.stack([-torch.sin(h), torch.cos(h)], dim=-1)
+        lat = (p * nv.unsqueeze(-2)).sum(-1)
+        c = (starts * nv).sum(-1)
+        in_sw = (lat - c.unsqueeze(-1)).abs() <= 0.02
+        a = (p * u.unsqueeze(-2)).sum(-1)
+        near = torch.where(in_sw, a, torch.full_like(a, 1e3)).min(dim=-1).values
+        assert torch.allclose(near - (starts * u).sum(-1),
+                              torch.full_like(near, clr), atol=1e-6)
+
+
+def test_batched_env_sample_shape():
+    p = _pile(batch=4).unsqueeze(1).expand(-1, 6, -1, -1)
+    h = torch.rand(4, 6, generator=torch.Generator().manual_seed(7)) * 2 * torch.pi
+    starts, n_in, ok = pile_contact_starts(p, h, blade_half_length=0.02,
+                                           clearance=0.005)
+    assert starts.shape == (4, 6, 2)
+    assert n_in.shape == (4, 6) and ok.shape == (4, 6)

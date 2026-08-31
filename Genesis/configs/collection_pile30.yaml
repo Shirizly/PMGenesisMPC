@@ -1,0 +1,73 @@
+# Collection plan: 30 cubes as a COMPACT MULTI-LAYER PILE, with pushes that
+# start in contact with it.
+#
+#   python -m Genesis.run_collection --plan configs/collection_pile30.yaml
+#
+# Purpose (docs/piled_collection.md): every dataset before this one was
+# physically a sparse single layer -- measured, 100% of particles in layer 0,
+# zero stacking -- and a typical push had only ~14% of the pile in its path.
+# Granular behaviour (contact chains, a bulldozed front, material flowing round
+# the blade) barely arose, so the linear-foresight comparison was run on a
+# regime the paper was never about. This plan produces actual piles and spends
+# every simulated push on material.
+
+base_config: basic.yaml
+output_root: data/foresight/pile30
+
+material:
+  shape: cube
+  particle_size: 0.005
+  particle_friction: 0.3
+  particle_density: 1000.0
+  box_friction: 0.3
+
+plan:
+  # 30, per the experiment brief. A 30-cube heap in a 30 mm square is ~3 layers
+  # deep at the stock 40 mm box height, which is the box's ceiling (see
+  # docs/piled_collection.md section 1) -- the spawn widens the footprint
+  # automatically rather than failing.
+  n_objects: [30]
+
+  # NOT taken from Genesis/configs/measured/throughput_optimal.yaml: those
+  # optima were measured on SCATTERED piles, where most particles are in no
+  # contact at all. A compact heap is one large contact island, so per-step cost
+  # is much higher and the batching penalty bites sooner. 16 is a deliberately
+  # conservative starting point; re-measure with
+  #   python -m tests.scaling_investigation.benchmark_throughput
+  # on a piled config before scaling up.
+  n_envs: {30: 16}
+
+  # 16 envs x 5 samples x 16 batches = 1280 transitions.
+  #
+  # Sized for the switched/per-bin fits: at 32x32 the operator is D=1024 per
+  # bin, so three bins want M >> 1024 each. 1280 is a FIRST run to measure the
+  # real throughput and confirm the pile forms as intended -- raise n_batches
+  # once the per-transition cost is known.
+  samples_per_env: 5
+  n_batches: 16
+
+  # A dropped multi-layer heap takes longer to settle than a scattered layer,
+  # and the settle is paid once per library rather than once per batch, so a
+  # larger library is better value here than it was for scattered runs.
+  state_library_settles: 8
+
+  # Superseded by pile_aware_actions, which touches down against the pile on
+  # purpose. Left false to make that explicit rather than relying on precedence.
+  placement_aware: false
+
+  # --- the piled spawn ---
+  pile_extent: 0.015      # 30 mm square at the tray centre; ~45 mm clear to
+                          # every wall, so wall interaction is absent rather
+                          # than confounded
+  pile_layers: null       # derive from footprint and particle count
+
+  # --- pushes that engage the pile ---
+  pile_aware_actions: true
+  pile_clearance: null    # null = one particle size (5 mm)
+  min_swath_particles: 3
+
+  # Fixed length keeps this a single-operator dataset, matching
+  # configs/dataset/genesis_foresight_L040.yaml so the piled and scattered
+  # results are directly comparable. pile_aware applies the perpendicular
+  # convention itself.
+  push_length: 0.04

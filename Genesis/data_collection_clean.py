@@ -142,6 +142,34 @@ def parse_args():
              "cannot reach the length inside the tray are truncated and "
              "reported — check that count is 0 before fitting.")
     parser.add_argument(
+        "--pile-extent", type=float, default=None, metavar="METRES",
+        help="spawn the particles inside a square of this HALF-WIDTH at the "
+             "tray centre instead of spread over the whole tray, so they land "
+             "as one compact multi-layer heap. Layers are derived from the area "
+             "unless --pile-layers overrides. See docs/piled_collection.md.")
+    parser.add_argument(
+        "--pile-layers", type=int, default=None,
+        help="force this many stacked spawn layers (default: derived from "
+             "--pile-extent and the particle count). Layers are dropped, not "
+             "interpenetrating; the settle collapses them into a natural pile.")
+    parser.add_argument(
+        "--pile-aware-actions", action="store_true",
+        help="start every push in contact with the pile and sweep through it: "
+             "the blade is placed one particle-width from the pile's near face "
+             "and laterally aligned so its swath contains material. Supersedes "
+             "--placement-aware and applies the perpendicular convention "
+             "itself. Blind sampling put only ~14%% of the pile in a typical "
+             "push's path and spent half the simulation budget on pushes too "
+             "weak for any model to beat persistence on.")
+    parser.add_argument(
+        "--pile-clearance", type=float, default=None, metavar="METRES",
+        help="blade-to-pile gap at the start of a pile-aware push "
+             "(default: one particle size)")
+    parser.add_argument(
+        "--min-swath-particles", type=int, default=3,
+        help="reject a pile-aware lateral alignment whose blade swath holds "
+             "fewer than this many particles, and re-draw (default 3)")
+    parser.add_argument(
         "--constant-params", action="store_true",
         help="use one fixed material setting instead of sweeping the "
              "friction x density x box-friction grid (100 batches). Values "
@@ -239,6 +267,13 @@ def main():
                 # iterate through material settings
                 print(f"\n+++ shape={shape}, size={size_setting['base']}, n_particles={n_p} +++")
 
+                if args.pile_extent is not None or args.pile_layers is not None:
+                    config.setdefault("spawn", {})
+                    if args.pile_extent is not None:
+                        config["spawn"]["pile_extent"] = args.pile_extent
+                    if args.pile_layers is not None:
+                        config["spawn"]["pile_layers"] = args.pile_layers
+
                 sm = SandboxManipulation(
                     config=config,
                     n_envs=args.n_envs,
@@ -291,6 +326,9 @@ def main():
                             shared_travel_distance=not args.independent_travel_distance,
                             perpendicular_pushes=args.perpendicular_pushes,
                             push_length=args.push_length,
+                            pile_aware=args.pile_aware_actions,
+                            pile_clearance=args.pile_clearance,
+                            min_swath_particles=args.min_swath_particles,
                         )
                     except RuntimeError as e:
                         print(f"Maximum attempts reached, stopped retrying to shuffle, skipping: {e}")

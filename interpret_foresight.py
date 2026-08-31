@@ -15,8 +15,14 @@ from fit_linear_foresight import (actions_to_pixels, canonicalise, contact_score
     fit_operator_nonneg, predict_heuristic, predict_world, swept_region_mask)
 from loro_foresight import gaussian_blur
 
-CFG='configs/dataset/genesis_foresight_L040.yaml'
-R,CR,BLUR,ITERS,B=32,0.5,1.0,2000,3
+import argparse as _ap
+_p=_ap.ArgumentParser(); _p.add_argument('--dataset', default='configs/dataset/genesis_foresight_L040.yaml')
+_p.add_argument('--n-particles', type=int, default=50)
+_p.add_argument('--res', type=int, default=32); _p.add_argument('--crop', type=float, default=0.5)
+_p.add_argument('--blur', type=float, default=1.0); _p.add_argument('--folds', type=int, default=8)
+_a=_p.parse_args()
+CFG=_a.dataset
+R,CR,BLUR,ITERS,B=_a.res,_a.crop,_a.blur,2000,3
 d=load_transition_arrays(CFG,'train')
 H,W=d.occ_t.shape[-2:]
 MM_PER_PX=128.0/W
@@ -25,9 +31,10 @@ s,e=actions_to_pixels(d.actions,d.workspace_min,d.workspace_max,(H,W))
 dev='cuda' if torch.cuda.is_available() else 'cpu'
 o0,o1,s,e=d.occ_t.to(dev),d.occ_t1.to(dev),s.to(dev),e.to(dev)
 eid=d.episode_ids.to(dev); runs=eid.unique(); plate=0.04/0.128*W
-PX_PER_CUBE=float(o0.sum(dim=(1,2)).mean())/50.0
+PX_PER_CUBE=float(o0.sum(dim=(1,2)).mean())/float(_a.n_particles)
 
 rows,base={},{}
+runs = runs[:_a.folds] if len(runs) > _a.folds else runs
 for r in runs:
     mte=eid==r; mtr=~mte
     ote,o1te,ste,ete=o0[mte],o1[mte],s[mte],e[mte]
@@ -63,14 +70,14 @@ for r in runs:
 
 print(f"calibration: {MM_PER_PX:.2f} mm/px, {PX_PER_CUBE:.1f} px per cube "
       f"(50 cubes, binary silhouette)\n")
-print("WHAT ONE PUSH ACTUALLY DOES, inside the swept band (mean over 8 folds):")
+print(f"WHAT ONE PUSH ACTUALLY DOES, inside the swept band (mean over {len(runs)} folds):")
 print(f"  material present in the band  : {float(torch.stack(base['mass_in_region_cubes']).mean()):6.1f} cube-equivalents")
 print(f"  net mass change in the band   : {float(torch.stack(base['mass_change_cubes']).mean()):6.1f} cube-equivalents")
 print(f"  centre-of-mass shift          : {float(torch.stack(base['com_shift_mm']).mean()):6.2f} mm  (push is 40 mm)")
 print(f"  per-pixel rms change          : {float(torch.stack(base['change_rms']).mean()):6.4f} occupancy units")
 ch=float(torch.stack(base['change_rms']).mean())
 cs=float(torch.stack(base['com_shift_mm']).mean())
-print(f"\nERRORS (mean over 8 folds), and as a share of that actual change:")
+print(f"\nERRORS (mean over {len(runs)} folds), and as a share of that actual change:")
 hdr=f"{'model':26s} {'rms':>8s} {'rms as % of':>12s} {'COM err':>9s} {'COM err as':>12s} {'mass err':>10s}"
 print(hdr); print(f"{'':26s} {'':>8s} {'the change':>12s} {'(mm)':>9s} {'% of shift':>12s} {'(cubes)':>10s}")
 print("-"*len(hdr))

@@ -308,3 +308,110 @@ def relative_blade_angle(starts_xy: torch.Tensor, stops_xy: torch.Tensor,
     dot = (direction * n_hat).sum(dim=-1)
     cross = direction[..., 0] * n_hat[..., 1] - direction[..., 1] * n_hat[..., 0]
     return torch.atan2(cross.abs(), dot.abs())
+
+
+# ---------------------------------------------------------------------------
+# Pile-aware action sampling: start at the pile, sweep through it
+# ---------------------------------------------------------------------------
+#
+# Blind sampling draws the blade's start point uniformly over the tray. With a
+# compact pile that wastes most of the budget: the blade spends its sweep
+# crossing empty tray, and a large share of pushes barely touch the material.
+# Measured on the 40 mm dataset (docs/linear_visual_foresight_baseline.md, and
+# reports/linear_foresight_report.md 2.3): a typical push had only ~14% of the
+# pile in its path, and the bottom half of pushes by contact produced so little
+# change that no model beat "predict nothing moved" on them. Those transitions
+# cost full simulation time and carry almost no signal.
+#
+# `pile_contact_starts` instead places the blade one particle-width from the
+# pile's near face along the chosen push direction, laterally aligned so the
+# swath actually contains material. Every simulated push then starts in contact
+# and sweeps through the pile for its whole length.
+
+
+def pile_contact_starts(particles_xy: torch.Tensor, headings: torch.Tensor,
+                        blade_half_length: float, clearance: float,
+                        min_swath: int = 3, jitter: float = 0.5,
+                        max_tries: int = 8,
+                        generator: torch.Generator | None = None):
+    """Blade start points that touch the pile and sweep through it.
+
+    For each entry, works in the frame of its own push direction: project every
+    particle onto the push axis (``a``) and onto the lateral axis (``l``). Pick a
+    lateral offset centred on a randomly chosen particle so the swath is
+    guaranteed to contain at least that one, then set the along-axis start just
+    behind the nearest particle *inside the swath* — so the blade begins in
+    contact rather than driving through empty tray to reach the pile.
+
+    Parameters
+    ----------
+    particles_xy : (..., N, 2) particle centres, metres. Parked/inactive
+        particles must be excluded by the caller; they would drag the pile's
+        apparent near face out to the parking area.
+    headings : (...,) push direction, radians.
+    blade_half_length : half the blade's length, metres — the swath half-width.
+    clearance : how far behind the nearest particle to start, metres. One
+        particle width is the intended value: close enough that no sweep
+        distance is wasted, far enough that the blade is not initialised
+        overlapping a particle (which the physics would resolve as a violent
+        push-out).
+    min_swath : keep re-drawing the lateral offset until at least this many
+        particles fall inside the swath. The point of the exercise: a push that
+        clips one corner of the pile carries little more information than one
+        that misses it.
+    jitter : lateral offset is the chosen particle's own lateral coordinate plus
+        a uniform draw over +/- ``jitter * blade_half_length``. 0 centres the
+        blade exactly on a particle every time (biased); 1 lets the particle sit
+        anywhere across the blade face (uniform, but sometimes at the very edge).
+    max_tries : lateral re-draws before giving up on ``min_swath``.
+
+    Returns
+    -------
+    (starts_xy, n_in_swath, ok) — ``starts_xy`` is (..., 2); ``n_in_swath``
+    counts particles in the accepted swath; ``ok`` is False where ``min_swath``
+    was never reached (a caller should drop or resample those rather than
+    simulate a push through nothing).
+    """
+    u = torch.stack([torch.cos(headings), torch.sin(headings)], dim=-1)
+    nvec = torch.stack([-torch.sin(headings), torch.cos(headings)], dim=-1)
+
+    a = (particles_xy * u.unsqueeze(-2)).sum(-1)          # (..., N) along push
+    lat = (particles_xy * nvec.unsqueeze(-2)).sum(-1)     # (..., N) lateral
+
+    shape = headings.shape
+    N = particles_xy.shape[-2]
+    dev = particles_xy.device
+    best_c = torch.zeros(shape, device=dev, dtype=particles_xy.dtype)
+    best_n = torch.zeros(shape, device=dev, dtype=torch.long)
+    ok = torch.zeros(shape, device=dev, dtype=torch.bool)
+
+    for _ in range(max_tries):
+        pick = torch.randint(0, N, shape, generator=generator, device=dev)
+        c = torch.gather(lat, -1, pick.unsqueeze(-1)).squeeze(-1)
+        off = (torch.rand(shape, generator=generator, device=dev,
+                          dtype=particles_xy.dtype) * 2.0 - 1.0)
+        c = c + off * jitter * blade_half_length
+
+        in_swath = (lat - c.unsqueeze(-1)).abs() <= blade_half_length
+        n_in = in_swath.sum(-1)
+        # Keep a draw if it is the best seen so far; accept outright once
+        # min_swath is met, and stop re-drawing those entries.
+        better = (n_in > best_n) & ~ok
+        best_c = torch.where(better, c, best_c)
+        best_n = torch.where(better, n_in, best_n)
+        ok = ok | (best_n >= min_swath)
+        if bool(ok.all()):
+            break
+
+    in_swath = (lat - best_c.unsqueeze(-1)).abs() <= blade_half_length
+    # Nearest particle inside the swath, measured along the push direction.
+    big = torch.finfo(a.dtype).max
+    a_near = torch.where(in_swath, a, torch.full_like(a, big)).min(dim=-1).values
+    # If the swath is empty (min_swath unreachable), fall back to the pile's
+    # overall near face so the returned start is still finite and sensible.
+    a_all = a.min(dim=-1).values
+    a_near = torch.where(best_n > 0, a_near, a_all)
+
+    a_start = a_near - clearance
+    starts = a_start.unsqueeze(-1) * u + best_c.unsqueeze(-1) * nvec
+    return starts, best_n, ok

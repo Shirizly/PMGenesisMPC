@@ -1,0 +1,25 @@
+# Piled 30-cube dataset with pile-aware 40 mm pushes, for re-running the
+# linear-foresight comparison on actual piles rather than a sparse single layer.
+# Collected by Genesis/configs/collection_pile30.yaml; see
+# docs/piled_collection.md.
+#
+# Deliberately the same geometry, material and push length as
+# genesis_foresight_L040.yaml, so the only difference between the two results is
+# the pile structure and the action distribution.
+
+type: genesis
+
+paths:
+  - foresight/pile30/cube/n30/size0.005
+
+val_pct: 0
+test_pct: 0
+
+resolution_scale: 0.5   # box 0.128 m -> 64x64 grid
+include_physics: true
+
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

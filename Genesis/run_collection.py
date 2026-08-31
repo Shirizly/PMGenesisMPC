@@ -349,6 +349,16 @@ def main():
             cmd += ["--perpendicular-pushes"]
         if spec.get("push_length") is not None:
             cmd += ["--push-length", str(spec["push_length"])]
+        if spec.get("pile_extent") is not None:
+            cmd += ["--pile-extent", str(spec["pile_extent"])]
+        if spec.get("pile_layers") is not None:
+            cmd += ["--pile-layers", str(spec["pile_layers"])]
+        if spec.get("pile_aware_actions"):
+            cmd += ["--pile-aware-actions"]
+        if spec.get("pile_clearance") is not None:
+            cmd += ["--pile-clearance", str(spec["pile_clearance"])]
+        if spec.get("min_swath_particles") is not None:
+            cmd += ["--min-swath-particles", str(spec["min_swath_particles"])]
         if args.rebuild_state_library:
             cmd += ["--rebuild-state-library"]
         if args.seed is not None:

@@ -29,9 +29,14 @@ BAND_HALF = 0.021          # plate half-length + margin, metres
 MM = 1000.0
 
 
-def load():
+DEFAULT_GLOB = 'Genesis/data/foresight/L040*/cube/n50/size0.005/_*_data.pt'
+
+
+def load(pattern: str = DEFAULT_GLOB):
     S, E, P, Q, A, R = [], [], [], [], [], []
-    files = sorted(glob.glob('Genesis/data/foresight/L040*/cube/n50/size0.005/_*_data.pt'))
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise SystemExit(f"no data files match {pattern}")
     for i, f in enumerate(files):
         d = torch.load(f, weights_only=False)
         S.append(d['states'][..., :3]); E.append(d['states_'][..., :3])
@@ -124,8 +129,15 @@ def r2(y, yh):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--glob", default=DEFAULT_GLOB)
+    ap.add_argument("--label", default="")
+    args = ap.parse_args()
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-    s0, s1, quat, ps, pe, run, nfiles = load()
+    s0, s1, quat, ps, pe, run, nfiles = load(args.glob)
+    if args.label:
+        print(f"### {args.label}")
     s0, s1, quat, ps, pe = (t.to(dev) for t in (s0, s1, quat, ps, pe))
     print(f"n={len(ps)} transitions from {nfiles} runs, {s0.shape[1]} particles")
 

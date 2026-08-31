@@ -425,6 +425,17 @@ class SandboxManipulation:
         # The default is the value that was actually in force.
         self._safety_margin = self._config.get("safety_margin", 0.02)
 
+        # Piled-spawn defaults (docs/piled_collection.md). Absent or null keys
+        # keep the historical spread-over-the-tray spawn, so every existing
+        # config and dataset is unaffected.
+        _spawn = self._config.get("spawn", {}) or {}
+        self._pile_extent = _spawn.get("pile_extent", None)
+        self._pile_layers = _spawn.get("pile_layers", None)
+        if self._pile_extent is not None:
+            self._pile_extent = float(self._pile_extent)
+        if self._pile_layers is not None:
+            self._pile_layers = int(self._pile_layers)
+
         particle_size = self._sampled_params.get(
             "particle_size",
             self._material_params["particle_size"],
@@ -734,7 +745,8 @@ class SandboxManipulation:
             raise ValueError(f"n must be in [0, {n_total}], got {n}")
         self._n_active = n
 
-    def shuffle_particles(self):
+    def shuffle_particles(self, pile_extent: float | None = None,
+                          pile_layers: int | None = None):
         # Safety net: flush any transitions recorded since the last shuffle
         # (i.e. the episode that's about to be overwritten) before wiping
         # particle state for a new configuration, so buffered data is never
@@ -753,6 +765,15 @@ class SandboxManipulation:
             return
         n_active = getattr(self, '_n_active', n_particles)
 
+        # Piled-spawn parameters. Explicit arguments win; otherwise the
+        # instance defaults, which come from the config's ``spawn`` block (see
+        # docs/piled_collection.md). Both None reproduces the original
+        # spread-over-the-whole-tray behaviour exactly.
+        if pile_extent is None:
+            pile_extent = self._pile_extent
+        if pile_layers is None:
+            pile_layers = self._pile_layers
+
         # Number of stacked layers to spread the particles over on respawn.
         # 1 reproduces the original single-layer behaviour exactly and is
         # always tried first; it is only incremented when a layer genuinely
@@ -761,7 +782,58 @@ class SandboxManipulation:
         # (~140 cubes of 5 mm in a 128 mm box) reachable at all. Stacked
         # layers are dropped, not interpenetrating: the caller's subsequent
         # update_material_state() settle collapses them into a natural pile.
+        # Layer ceiling imposed by the box height. Computed unconditionally
+        # because the placement-retry handler needs it whether the layer count
+        # came from an explicit `pile_layers`, from the area estimate, or from
+        # the default of 1.
+        _sz_cap = float(self._material_params.get("particle_size") or 0.005)
+        _h_cap = self._box_params["vol"][2]
+        _wall_cap = float(self._wall_thickness)
+        _max_layers = max(1, int(((_h_cap - _wall_cap) - 1e-3) // (_sz_cap + 1e-3)))
+
         n_layers = 1
+        if pile_layers is not None:
+            n_layers = max(1, int(pile_layers))
+        elif pile_extent is not None:
+            # Estimate the layers a confined region needs, rather than
+            # discovering it through placement failures: the retry handler below
+            # does converge, but each failed attempt burns a full RSA sweep and
+            # the log fills with alarming-looking "placement failed" lines.
+            # RSA on a plane saturates near 55% coverage. 0.38 rather than a
+            # tighter bound because the sqrt(2) yaw inflation is already in the
+            # collision extents AND the per-layer min_gap costs area too;
+            # measured, 0.45 still produced an occasional placement failure that
+            # the retry handler had to absorb.
+            _sz = float(self._material_params.get("particle_size") or 0.005)
+            _area_each = (_sz * math.sqrt(2.0)) ** 2
+            _pack = 0.38
+
+            # The box height caps how many layers can be spawned at all. Rather
+            # than let the estimate exceed it and fail, widen the pile footprint
+            # to whatever the feasible layer count needs, and say so — the
+            # caller asked for a compact heap, and the nearest achievable
+            # compact heap is more useful than an error.
+            _h = self._box_params["vol"][2]
+
+            _needed_area = n_active * _area_each / _pack
+            n_layers = max(1, int(math.ceil(_needed_area
+                                            / max((2.0 * float(pile_extent)) ** 2, 1e-9))))
+            if n_layers > _max_layers:
+                n_layers = _max_layers
+                # 8% linear margin: the area estimate is an average, and RSA
+                # is stochastic, so sizing to exactly the estimate leaves the
+                # first draw failing about as often as it succeeds.
+                _min_extent = 0.54 * math.sqrt(_needed_area / n_layers)
+                self._log(
+                    f"pile spawn: {n_active} particles need more than the "
+                    f"{_max_layers} layer(s) the {_h:.3f} m box allows at "
+                    f"pile_extent={pile_extent:.4f} m; widening the footprint to "
+                    f"{_min_extent:.4f} m so they fit in {n_layers} layer(s)")
+                pile_extent = _min_extent
+            if self._debug:
+                self._log(f"pile spawn: extent {pile_extent:.4f} m "
+                          f"({2000 * pile_extent:.0f} mm square), {n_layers} layer(s), "
+                          f"{n_active} particles")
         max_retries = 10
         for attempt in range(max_retries):
             try:
@@ -791,6 +863,26 @@ class SandboxManipulation:
                 inner_max = torch.tensor([width / 2, depth / 2, height - wall / 2], device=gs.device)
                 lower = inner_min + collision_half_extents
                 upper = inner_max - collision_half_extents
+
+                # Piled spawn: confine the xy draw to a square of half-width
+                # ``pile_extent`` at the tray centre, so the particles land as
+                # one compact heap instead of a sparse single layer covering the
+                # tray. Centred deliberately — a pile against a wall behaves
+                # differently under pushing (the wall carries load), and keeping
+                # it central means the wall is not part of what the dynamics
+                # model has to learn. z is untouched; layers come from
+                # ``n_layers`` below.
+                if pile_extent is not None:
+                    ext = float(pile_extent)
+                    lower[:, :2] = torch.maximum(lower[:, :2],
+                                                 torch.full_like(lower[:, :2], -ext))
+                    upper[:, :2] = torch.minimum(upper[:, :2],
+                                                 torch.full_like(upper[:, :2], ext))
+                    if bool((upper[:n_active, :2] < lower[:n_active, :2]).any()):
+                        raise RuntimeError(
+                            f"pile_extent={ext} m is smaller than a particle's own "
+                            f"half-footprint; nothing can be placed. Use a larger "
+                            f"extent or smaller particles.")
 
                 positions = torch.empty((self._n_envs, n_particles, 3), device=gs.device)
                 order = torch.argsort(torch.prod(half_extents, dim=1), descending=True)
@@ -894,7 +986,18 @@ class SandboxManipulation:
                     # count one more roll of the dice before concluding the
                     # box is genuinely too full and adding a layer.
                     if attempt % 2 == 1:
-                        n_layers += 1
+                        if pile_extent is not None and n_layers >= _max_layers:
+                            # A confined pile has already used every layer the
+                            # box height allows; another one would raise the
+                            # "cannot spawn" error below. Widen the footprint
+                            # instead — the caller wants a compact heap, and a
+                            # slightly wider one still is.
+                            pile_extent *= 1.15
+                            print(f"Placement failed at the box's {_max_layers}-layer "
+                                  f"ceiling; widening pile_extent to "
+                                  f"{pile_extent:.4f} m")
+                        else:
+                            n_layers += 1
                     print(
                         f"Placement of particles failed due to overlap, retrying "
                         f"{attempt+1}/{max_retries} with {n_layers} layer(s)..."
@@ -1584,6 +1687,9 @@ class SandboxManipulation:
             shared_travel_distance: bool = False,
             perpendicular_pushes: bool = False,
             push_length: float | None = None,
+            pile_aware: bool = False,
+            pile_clearance: float | None = None,
+            min_swath_particles: int = 3,
         ):
         """
         Generate random action samples for all environments.
@@ -1625,6 +1731,19 @@ class SandboxManipulation:
                 that cannot reach the length inside the tray are truncated and
                 reported — check that count before fitting, since a truncated
                 push is not in the requested length bin.
+            pile_aware: place the blade one particle-width from the pile's near
+                face and laterally aligned so its swath contains material, so
+                every simulated push starts in contact and sweeps through the
+                pile for its whole length. Implies perpendicular pushes (the
+                blade faces along its travel). See docs/piled_collection.md;
+                the motivation is that blind sampling put only ~14% of the pile
+                in a typical push's path and spent half the simulation budget on
+                pushes too weak for any model to beat persistence on
+                (reports/linear_foresight_report.md 2.3).
+            pile_clearance: gap between blade and nearest particle at the start,
+                metres. Defaults to one particle size.
+            min_swath_particles: reject a lateral alignment whose swath holds
+                fewer than this many particles, and re-draw.
 
         Returns:
             Tuple of (action_starts, action_stops, angles) each of shape [n_envs * n_samples, 3/1]
@@ -1654,6 +1773,19 @@ class SandboxManipulation:
         action_stops = action_stops.reshape(self._n_envs, n_samples, 3)
         angles = angles.reshape(self._n_envs, n_samples)
 
+        if pile_aware:
+            action_starts, angles, u_dir = self._apply_pile_aware_starts(
+                n_samples, tool_length, tool_width,
+                clearance=pile_clearance, min_swath=min_swath_particles)
+            action_stops = self._pile_aware_stops(
+                action_starts, angles, u_dir, tool_length, tool_width,
+                push_length)
+            # The geometry is already exactly perpendicular, exactly the
+            # requested length, and pointed INTO the pile, so the
+            # perpendicular/fixed-length constraint below must not touch it:
+            # `constrain_push` re-draws the +/- sign of the blade normal at
+            # random, which would send half of these pushes away from the pile.
+            return action_starts, action_stops, angles
         if placement_aware:
             action_starts, angles = self._apply_placement_aware_starts(
                 action_starts, angles, n_samples,
@@ -1724,6 +1856,94 @@ class SandboxManipulation:
                       f"are NOT in the requested length bin.")
         return (torch.cat((result.starts_xy, action_starts[..., 2:]), dim=-1),
                 torch.cat((result.stops_xy, action_stops[..., 2:]), dim=-1))
+
+    def _pile_aware_stops(self, action_starts, angles, u_dir,
+                          tool_length, tool_width, push_length):
+        """End points for pile-aware pushes: travel along ``u_dir``.
+
+        The start is dictated by the pile, so it can sit anywhere the pile
+        reaches; what has to stay inside the tray is the *travel*. Distance is
+        therefore capped by a ray-box test against the yaw-dependent blade box,
+        and a fixed ``push_length`` that does not fit is reported rather than
+        silently shortened (a shortened push leaves its length bin — see
+        Genesis/action_sampling.py).
+
+        With ``push_length=None`` the distance is drawn uniformly between one
+        particle width and whatever the tray allows, which keeps the sweep
+        entirely inside the pile-and-beyond region without a magic constant.
+        """
+        from .action_sampling import ray_box_max_travel, sampling_box
+
+        low, high = sampling_box(angles, self._granular_vol,
+                                 tool_length, tool_width, self._safety_margin)
+        starts_xy = action_starts[..., :2]
+        t_max = ray_box_max_travel(starts_xy, u_dir, low, high)   # (..., 1)
+
+        if push_length is None:
+            lo = float(self._material_params.get("particle_size") or 0.005)
+            span = (t_max - lo).clamp_min(0.0)
+            L = lo + torch.rand_like(span) * span
+        else:
+            L = torch.full_like(t_max, float(push_length))
+            short = (L > t_max + 1e-9).squeeze(-1)
+            if bool(short.any()):
+                self._log(f"WARNING pile-aware: {int(short.sum())}/{short.numel()} "
+                          f"pushes cannot travel the requested "
+                          f"{push_length} m from their pile-contact start "
+                          f"without leaving the tray, and were shortened — those "
+                          f"transitions are NOT at the requested length")
+            L = torch.minimum(L, t_max)
+
+        return torch.cat((starts_xy + u_dir * L, action_starts[..., 2:]), dim=-1)
+
+    def _apply_pile_aware_starts(self, n_samples, tool_length, tool_width,
+                                 clearance=None, min_swath=3):
+        """Draw blade poses that begin in contact with the pile.
+
+        Returns ``(action_starts, angles)`` shaped like the blind draw's, so it
+        drops into ``generate_action_samples`` in the same slot as
+        ``_apply_placement_aware_starts``. Unlike that one, this *replaces* the
+        drawn start entirely rather than refining it: the whole point is that
+        the start is determined by where the pile is.
+
+        The blade yaw is set perpendicular to the push direction, so this is
+        only meaningful together with the perpendicular-push convention (which
+        `generate_action_samples` then leaves alone, since the geometry is
+        already consistent).
+
+        Reads the *current* particle state, so callers must settle first —
+        ``collect_data_samples`` already calls ``update_material_state()``
+        before sampling for exactly this reason.
+        """
+        from .action_sampling import pile_contact_starts
+
+        if clearance is None:
+            clearance = float(self._material_params.get("particle_size") or 0.005)
+        n_active = getattr(self, "_n_active", len(self.material))
+        pxy = self._particle_state[:, :n_active, :2]              # (n_envs, N, 2)
+        # (n_envs, n_samples, N, 2): every sample of an env sees that env's pile.
+        pxy = pxy.unsqueeze(1).expand(-1, n_samples, -1, -1)
+
+        headings = torch.rand((self._n_envs, n_samples), device=gs.device) * (2 * torch.pi)
+        starts_xy, n_in, ok = pile_contact_starts(
+            pxy, headings, blade_half_length=float(tool_length) / 2.0,
+            clearance=float(clearance), min_swath=int(min_swath))
+
+        if self._debug or not bool(ok.all()):
+            self._log(f"pile-aware actions: swath holds {float(n_in.float().mean()):.1f} "
+                      f"particles on average (min {int(n_in.min())}); "
+                      f"{int((~ok).sum())}/{ok.numel()} draws could not reach "
+                      f"min_swath={min_swath}")
+
+        z = torch.full((self._n_envs, n_samples, 1), self._operation_height,
+                       device=gs.device)
+        action_starts = torch.cat((starts_xy, z), dim=-1)
+        # Blade face normal to travel: the planar-pushing convention, and what
+        # makes `blade_half_length` the swath half-width above.
+        angles = headings + torch.pi / 2
+        angles = torch.remainder(angles + torch.pi / 2, torch.pi) - torch.pi / 2
+        u_dir = torch.stack([torch.cos(headings), torch.sin(headings)], dim=-1)
+        return action_starts, angles, u_dir
 
     def _equalize_batch_travel(self, action_starts, action_stops, low, high):
         """Give every env in a batch the same push length for each sample.
@@ -2009,6 +2229,9 @@ class SandboxManipulation:
             shared_travel_distance: bool = True,
             perpendicular_pushes: bool = False,
             push_length: float | None = None,
+            pile_aware: bool = False,
+            pile_clearance: float | None = None,
+            min_swath_particles: int = 3,
         ):
         """
         Collect data samples from all environments efficiently.
@@ -2030,6 +2253,15 @@ class SandboxManipulation:
             push_length: fix every push's travel distance, in metres (see
                 generate_action_samples). Implies the length is shared across
                 the batch, so ``shared_travel_distance`` becomes a no-op.
+            pile_aware: start every push in contact with the pile and sweep
+                through it (see generate_action_samples and
+                docs/piled_collection.md). Supersedes ``placement_aware`` and
+                the perpendicular/fixed-length constraint, which it applies
+                itself.
+            pile_clearance: blade-to-pile gap at the start, metres (default:
+                one particle size).
+            min_swath_particles: minimum particles the blade's swath must
+                contain.
 
         Both restrictions are recorded in the saved config so a restricted
         dataset is distinguishable from an unrestricted one on disk.
@@ -2042,8 +2274,13 @@ class SandboxManipulation:
             "goal_threshold": self._goal_threshold,
             "placement_aware": bool(placement_aware),
             "shared_travel_distance": bool(shared_travel_distance),
-            "perpendicular_pushes": bool(perpendicular_pushes),
+            "perpendicular_pushes": bool(perpendicular_pushes or pile_aware),
             "push_length": (None if push_length is None else float(push_length)),
+            "pile_aware": bool(pile_aware),
+            "pile_clearance": (None if pile_clearance is None else float(pile_clearance)),
+            "min_swath_particles": int(min_swath_particles),
+            "spawn_pile_extent": self._pile_extent,
+            "spawn_pile_layers": self._pile_layers,
         })
 
         # Allocate once or reuse if same size
@@ -2062,20 +2299,42 @@ class SandboxManipulation:
         self.update_material_state()
 
         # Generate random action samples per env
-        action_starts, action_stops, angles = self.generate_action_samples(
-            n_samples, placement_aware=placement_aware,
+        _sample_kwargs = dict(
+            placement_aware=placement_aware,
             shared_travel_distance=shared_travel_distance,
             perpendicular_pushes=perpendicular_pushes,
-            push_length=push_length)
+            push_length=push_length,
+            pile_aware=pile_aware,
+            pile_clearance=pile_clearance,
+            min_swath_particles=min_swath_particles)
+
+        # Pile-aware actions are aimed AT the pile, so they must be drawn from
+        # the pile's current position -- one push moves the material the next
+        # one would have been aimed at. Drawing all n_samples up front (correct
+        # and much cheaper for every other mode, since it lets one batched call
+        # cover the whole episode) leaves every sample after the first aiming at
+        # a stale pile: measured on a 3-sample episode, the blade-to-pile gap
+        # went 5.00 mm (correct) -> 17.10 -> 12.41 mm. So this mode re-draws per
+        # step instead.
+        if pile_aware:
+            action_starts = action_stops = angles = None
+        else:
+            action_starts, action_stops, angles = self.generate_action_samples(
+                n_samples, **_sample_kwargs)
+
         for sample_idx in range(n_samples):
             print(f" > sample {sample_idx + 1}/{n_samples}")
 
 
             self._collection_buffers["states"][sample_idx].copy_(self._particle_state)
 
-            p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
-            p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
-            angle = angles[:, sample_idx]              # [n_envs]
+            if pile_aware:
+                _s, _e, _a = self.generate_action_samples(1, **_sample_kwargs)
+                p_start, p_stop, angle = _s[:, 0, :], _e[:, 0, :], _a[:, 0]
+            else:
+                p_start = action_starts[:, sample_idx, :]  # [n_envs, 3]
+                p_stop = action_stops[:, sample_idx, :]    # [n_envs, 3]
+                angle = angles[:, sample_idx]              # [n_envs]
 
             reached_goal, p_stop = self.execute_action(
                 p_start,
