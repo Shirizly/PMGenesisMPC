@@ -11,6 +11,7 @@ type: genesis
 
 paths:
   - foresight/pile30/cube/n30/size0.005
+  - foresight/pile30_8env/cube/n30/size0.005
 
 val_pct: 0
 test_pct: 0

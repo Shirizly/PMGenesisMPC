@@ -20,6 +20,7 @@ Lyapunov controller) not attempted.
 | Q5 | Does non-negativity beat plain ridge (their Fig. 7)? | **In 3 of 4 configurations.** Directionally replicated, not universal. | Medium |
 | Q6 | Does the uniform-deposit-ahead assumption hold in 3-D granular? | **Qualitatively yes** — their Fig. 5 structure reproduces: depletion across the swept band, deposition peaking just ahead. | Medium |
 | Q7 | Resolution: does 32×32 hurt vs 64×64? | **Yes** — and downsampling the *data* to 32 does not rescue it either. Native 64 + σ=1.0 is the only configuration where the pipeline is free. | High |
+| Q9 | Is the per-pixel test even the right one? | **No.** The paper's claim is comparative and control-based, and persistence — which wins every per-pixel comparison — cannot rank actions at all, so it is useless as a control baseline. On ranking, the operator captures 30-47% of oracle utility and the heuristic 42-74%; on the control-relevant `dV` for compact goals, linearity keeps 70-75% of achievable prediction (§2.4). | High |
 | Q8 | What actually blocks the method here? | **Linearity.** Per-push displacement is 84% predictable from grid-visible features but only 58% linearly — linearity forfeits ~31% of the achievable signal (§2.3). The resampling issue is real but secondary, and fixed by a σ≈1 blur. | High |
 
 ---
@@ -348,6 +349,133 @@ band displacement**, with the knowledge that ~60% of the nonlinear headroom is
 low-order (so a quadratic/bilinear operator should capture it — the "bilinear
 rung" of `analytic_descriptors_latent_space_plan_v2.md` §3) and ~40% is
 threshold-like (needing genuine nonlinearity).
+
+## 2.4 The per-pixel comparison was the wrong test
+
+Everything in §2–§2.3 measured one-step image accuracy. That is not the claim the
+paper makes, and judged by it the baseline looks worse than it is.
+
+What Suh & Tedrake actually establish:
+
+- a **comparative** prediction result — their Table 1 spans 1.858 (linear) to
+  2.537 (DVF-Affine), a ~10-35% band, and **no persistence baseline is
+  reported at all**;
+- a **control** result — greedy descent on an image-space Lyapunov function
+  drives the pile into the target set (their Figs. 11–12).
+
+A greedy controller never needs an accurate predicted image. It needs candidate
+actions **ranked** correctly. Persistence — which won every per-pixel comparison
+above — predicts `dV = 0` for *every* action and therefore **cannot rank at
+all**. As a control baseline it is not a strong floor; it is useless. So "the
+operator's error is 99% of the change" and "the operator is a useful controller"
+are compatible statements, and only the second one bears on the paper.
+
+### Can the operator rank actions? Yes.
+
+`control_utility_test.py`, held-out, scattered 50-cube data, `V = dᵀy/‖y‖₁`:
+
+| goal | model | Pearson | partial | Spearman | sign correct | best-of-16 utility |
+|---|---|---|---|---|---|---|
+| centre | persistence | — | — | — | — | **0.000** (cannot rank) |
+| | linear operator | 0.322 | 0.265 | 0.328 | 83% | 0.299 |
+| | heur-cumulative | 0.474 | 0.448 | 0.444 | 72% | 0.416 |
+| corner | linear operator | 0.457 | 0.445 | 0.437 | 66% | 0.472 |
+| | heur-cumulative | 0.672 | 0.669 | 0.795 | 85% | 0.737 |
+
+`partial` removes the state's own cost and contact score, so it is the part of
+the ranking that is about the **action** rather than which state it landed on —
+it survives, so the signal is real. `best-of-16` is the fraction of an oracle's
+advantage over a random pick that the model captures.
+
+Caveat: candidate slates are drawn from *different* states, because the data
+holds one action per state. The partial correlations address the confound but do
+not eliminate it; a same-state slate needs the oracle-MPC machinery.
+
+Note the inversion against §2.3: **the geometric heuristic ranks better than the
+fitted operator**, despite losing to it on per-pixel error. A transport model
+gets the *direction* of mass flow right even when its pixel detail is worse, and
+direction is what `dV` depends on.
+
+### How much of the control-relevant quantity is linearly reachable?
+
+`deltav_predictability.py` repeats the §2.3 decomposition with `dV` as the
+target, computed on **particles** (their eq. 3), so it is free of grid
+resolution and of the warp. 5-fold grouped CV, n=7680:
+
+| goal | linear R² | boosted R² | **linear share** |
+|---|---|---|---|
+| centre (compact square) | 0.522 | 0.750 | **70%** |
+| point | 0.648 | 0.863 | **75%** |
+| corner | 0.339 | 0.897 | 38% |
+| stripe | 0.240 | 0.730 | 33% |
+
+**For compact target sets — which is what the paper uses — linearity keeps
+70–75% of the achievable prediction, against 58% for raw displacement.** The
+paper's claim is materially better supported on the quantity its controller
+actually consumes than on the one §2.3 measured. For extended targets (corner,
+stripe) it collapses to a third.
+
+### What linearity costs in control terms
+
+R² is not the currency a controller spends. Converting held-out predictions into
+realised `dV` under best-of-16 selection (mm of mean particle-to-goal distance;
+**negative = the pile moved toward the goal**):
+
+| goal | random | linear | boosted | oracle |
+|---|---|---|---|---|
+| centre | +0.353 | +0.040 | +0.014 | −0.040 |
+| corner | +0.453 | −0.438 | **−1.424** | −1.546 |
+| stripe | +0.403 | −0.052 | **−0.476** | −0.702 |
+| point | +0.818 | −0.104 | **−0.579** | −0.750 |
+
+Two readings, both important:
+
+1. **A linear model is a working controller.** It converts a random push, which
+   moves the pile *away* from every goal, into a neutral-to-helpful one. That is
+   the paper's result reproduced, in the regime where it is meant to hold.
+2. **A nonlinear model is 3–6× better.** On `corner`, −1.424 vs −0.438; on
+   `point`, −0.579 vs −0.104. In utility terms linear captures 43–79% of the
+   oracle's advantage where boosted captures 79–93%. So linearity is
+   *sufficient* but far from optimal, and the ~31% signal loss measured in §2.3
+   translates into a large fraction of the achievable control performance.
+
+Also worth noting for experiment design: for the `centre` goal even the **oracle**
+only reaches −0.040 mm against a random +0.353. On sparse scattered objects with
+blind 40 mm pushes, almost no available action helps — which is the same
+regime problem §2.1 and `docs/piled_collection.md` identify, showing up in
+control units.
+
+## 2.5 Hypothesis: does linearity suit dense piles better? (preliminary: no)
+
+The obvious explanation for §2.3's result is regime: the datasets were sparse
+single layers, so the pushes moved *individual objects* rather than *material*,
+and a linear operator may suit a packed continuum better than a handful of
+isolated cubes. `docs/piled_collection.md` implements piled collection to test
+this properly.
+
+A cheaper preliminary test needs no new data. Within the scattered dataset some
+pushes happen to strike locally clustered cubes and some strike isolated ones, so
+the linear share can be measured as a function of local packing —
+`density_stratified.py`, packing = mean nearest-neighbour distance among swath
+particles, in cube widths (1.0 = touching):
+
+| packing stratum | n | NN distance | linear R² | boosted R² | linear share |
+|---|---|---|---|---|---|
+| densest | 2560 | 1.21 | 0.656 | 0.858 | **76%** |
+| middle | 2560 | 2.03 | 0.631 | 0.750 | **84%** |
+| sparsest | 2560 | 2.69 | 0.544 | 0.727 | **75%** |
+
+**The linear share does not rise with density** — it is flat and non-monotone
+(76 / 84 / 75%). Absolute predictability does rise (linear R² 0.544 → 0.656, and
+boosted 0.727 → 0.858), so denser material is more predictable *for every model*,
+but linearity gains no relative ground.
+
+That is evidence against the regime hypothesis, with one real caveat: this
+measures *local* clustering inside an otherwise sparse layer, not a genuine
+multi-layer pile with load transferred through its depth. The densest stratum
+(1.21 cube widths) is touching-contact, so it is a fair proxy for in-plane
+packing, but it cannot proxy for depth. The piled dataset remains the test —
+expectations should now be modest.
 
 ## 3. Q1 in full: the 5th DOF was never in play
 
