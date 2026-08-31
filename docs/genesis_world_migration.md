@@ -151,6 +151,45 @@ A transition at 200 objects goes from ~896 s to roughly 400 s — better, but
 still ~4.4 GPU-days per 1000 transitions, so open decision 5 in
 `scaling_to_200_objects.md` is unchanged in kind.
 
+### Environment defect the upgrade introduced: torch's JIT is broken
+
+`genesis-world 1.3.3` pulls in **`nvidia-cuda-nvrtc-cu12 12.9.86`** alongside
+torch's own `cu130` build. Both are installed, the wrong `libnvrtc` wins the
+library search, and any torch JIT compilation then fails:
+
+```
+RuntimeError: nvrtc: error: failed to open libnvrtc-builtins.so.13.0
+```
+
+The correct library **is** present, at
+`site-packages/nvidia/cu13/lib/libnvrtc-builtins.so.13.0` — it simply is not the
+one being found. Workaround:
+
+```bash
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.10/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH"
+```
+
+**This is easy to miss, because it only fires on code paths that actually invoke
+the JIT.** It was found via `record_simulation_video.py`: `geom.z_up_to_R` is
+torch-scripted and is only called for a camera at an *angle*, so a single
+top-down camera worked and adding a three-quarter one killed the run. Anything
+else in this repo that touches torch's JIT will hit the same thing.
+
+A proper fix is probably to uninstall `nvidia-cuda-nvrtc-cu12` if nothing
+requires it, rather than carrying the `LD_LIBRARY_PATH` workaround — not yet
+attempted, because removing a package the upgrade installed deserves its own
+check.
+
+### A second Genesis 1.3 change: the recorder drops frames
+
+`start_recording(save_to_filename, fps)` streams to disk and **decimates frames
+to honour the requested fps against simulation time**. Rendering more often than
+the requested fps silently discards the surplus: `record_simulation_video.py`
+used to render the descent and lift at full rate and the sweep subsampled, and
+measured 206 frames rendered against 79 written — losing precisely the descent
+frames it was rendering densely on purpose. Every phase is now sampled at one
+cadence so the two agree; use a smaller `--every` for more detail.
+
 ### Still outstanding
 
 * `Genesis/configs/measured/throughput_optimal.yaml` was measured on 0.4.5 and

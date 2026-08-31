@@ -151,11 +151,16 @@ def main():
     def grab_push(phase, step):
         """Frame hook for execute_action: on_step(phase, step).
 
-        The descent and the lift are only a few dozen steps and are where a
-        touchdown into a particle would appear, so they are rendered at full
-        rate; only the sweep is subsampled.
+        Every phase is sampled at the SAME cadence. An earlier version rendered
+        the descent and lift at full rate, on the reasoning that a touchdown
+        into a particle would show there -- but from Genesis 1.3 the recorder
+        streams to disk and drops frames to honour the requested fps against
+        simulation time, so those extra frames were silently discarded (206
+        rendered, 79 written). Rendering uniformly means the frame rate and the
+        requested fps agree and nothing is dropped. Use a smaller --every to see
+        the descent in more detail.
         """
-        if phase in ("lower", "lift") or step % args.every == 0:
+        if step % args.every == 0:
             _render()
 
     # Genesis moved the output arguments from stop_recording to start_recording
