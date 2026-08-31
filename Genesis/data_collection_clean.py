@@ -170,6 +170,16 @@ def parse_args():
         help="reject a pile-aware lateral alignment whose blade swath holds "
              "fewer than this many particles, and re-draw (default 3)")
     parser.add_argument(
+        "--max-collision-pairs", type=int, default=None,
+        help="override rigid_options.max_collision_pairs. The default is "
+             "max(150, n/2), derived from a SCATTERED pile where each particle "
+             "has roughly one floor contact. A dense multi-layer pile has many "
+             "more inter-particle contacts, and past the cap Genesis silently "
+             "stops adding them -- the recorded state then comes from "
+             "incomplete contact physics with no error surfaced. Raise this for "
+             "piled runs and check the WARNING lines. Costs VRAM linearly, so "
+             "reduce --n-envs to match.")
+    parser.add_argument(
         "--constant-params", action="store_true",
         help="use one fixed material setting instead of sweeping the "
              "friction x density x box-friction grid (100 batches). Values "
@@ -266,6 +276,11 @@ def main():
 
                 # iterate through material settings
                 print(f"\n+++ shape={shape}, size={size_setting['base']}, n_particles={n_p} +++")
+
+                if args.max_collision_pairs is not None:
+                    config.setdefault("rigid_options", {})
+                    config["rigid_options"]["max_collision_pairs"] = \
+                        args.max_collision_pairs
 
                 if args.pile_extent is not None or args.pile_layers is not None:
                     config.setdefault("spawn", {})

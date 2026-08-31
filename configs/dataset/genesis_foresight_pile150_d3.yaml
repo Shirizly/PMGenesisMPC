@@ -1,0 +1,14 @@
+# H1 continuum limit - 150 cubes of 3mm in a compact pile.
+# Collected by scripts/overnight_foresight.sh; see docs/linear_foresight_findings.md.
+type: genesis
+paths:
+  - foresight/pile150_d3/cube/n150/size0.003
+val_pct: 0
+test_pct: 0
+resolution_scale: 0.5   # box 0.128 m -> 64x64 grid
+include_physics: true
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}
