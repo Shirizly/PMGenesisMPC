@@ -531,6 +531,91 @@ on granular piles the switch needs to be on the **state-action contact amount**,
 not on the action alone — a small, principled extension of their model rather
 than a replacement.
 
+## 2.7 The contact-switching insight does NOT transfer to the pixel operator
+
+§2.6 predicted that a contact-switched *pixel* operator would recover the
+nonlinear headroom once `M >> D` per bin. Tested directly at `crop = 0.25`
+(`D = 256`, `M/D = 8.3` per bin, 7 680 transitions, 6-fold LORO):
+
+| model | rms | vs identity | folds won |
+|---|---|---|---|
+| persistence (raw) | 0.12146 | +0.00003 | 4/6 |
+| identity (warp only) | 0.12149 | 0.00000 | — |
+| switched, shrink→I | 0.12162 | −0.00012 | 2/6 |
+| single, shrink→I | 0.12169 | −0.00020 | 2/6 |
+| switched-nonneg | 0.12179 | −0.00029 | 2/6 |
+| heur-cumulative | 0.13891 | −0.01742 | 0/6 |
+
+**Prediction not confirmed.** Every operator variant sits within 0.0003 of
+persistence against a fold sd of 0.014 — indistinguishable. Well-determined
+per-bin fits do not make the pixel operator beat persistence.
+
+So the contact-switching result is real but **level-specific**: it holds for
+*scalar summaries* of a push (displacement, `dV`) and not for per-pixel image
+prediction. Getting the aggregate amount of material movement right does not fix
+where individual pixels land. That is a useful boundary on the finding, and it
+argues for operating at the descriptor level (`dmdc_baseline.py`) rather than the
+pixel level if the linear model class is to be kept.
+
+One consistent detail across every configuration tested: in the
+highest-contact bin the operator *is* better than warped persistence
+(+0.00267 here), and it is worse in the low-contact bins. The operator learns
+real physics; it is only useful where the push does real work.
+
+## 2.8 The piled dataset: dense packing achieved, depth not — and that settles it
+
+Piled collection (`docs/piled_collection.md`) was run at 30 cubes, 15 mm spawn
+extent, pile-aware 40 mm pushes. Characterisation of the first 80 transitions
+against the scattered dataset:
+
+| | scattered 50 | **piled 30** |
+|---|---|---|
+| mean nearest-neighbour distance | 2.05 cube widths | **1.09** (touching) |
+| layer occupancy | 100% layer 0 | 90.4% / 9.6% |
+| pile z span | 5.0 mm (one cube) | 5.2 mm |
+| pile in blade swath | ~14% | **67%** (20.1/30) |
+| blade start behind pile | n/a (blind) | **5.00 mm** (exact) |
+| band displacement | 18.9 mm mean | **24.7 mm** |
+| vertical displacement | ~0.01 mm | 0.032 mm |
+| pushes shortened by tray | 0% | 16% |
+
+**Two of the three goals were met and one was not.** Packing went from 2.05 to
+**1.09 cube widths** — the cubes are genuinely in contact, and the blade now
+engages 67% of the pile instead of 14%. But **depth was not achieved**: 90% of
+particles still sit in layer 0 and the z span is one cube. Thirty 5 mm cubes
+(3750 mm³) cannot form a deep heap in a 128 mm tray — at a ~30° angle of repose
+they settle into a dense *monolayer*, and the spawn's 3 dropped layers collapse
+into it.
+
+### This is enough to answer the pile hypothesis, without the full dataset
+
+The density-stratified proxy in §2.5 already measured the linear share at
+**1.21** cube-width packing — essentially the piled dataset's 1.09 — and found
+**76%**, no better than the sparse stratum's 75%. The piled data's achievable
+regime is the regime that proxy already covered.
+
+So: **denser in-plane packing does not improve the linear share, and 30 cubes
+cannot produce the depth that might.** The pile hypothesis is not refuted for
+genuinely deep piles, but it cannot be tested with this particle count. Testing
+it properly needs either many more particles (100–150, which the throughput
+section below says is expensive) or a smaller container.
+
+### Cost, measured
+
+Far worse than scattered collection, and worse than the estimate in
+`docs/piled_collection.md` §4. A dense contact island makes the *post-push*
+settle the bottleneck, and that settle cannot be damped without biasing `s'`
+toward smaller displacements. Measured: **~4 minutes per batch** of 2 pushes,
+against ~0.18 s/transition for scattered collection at 64 envs — roughly two
+orders of magnitude worse per transition. The library settle *can* be damped
+(`--state-library-damping 15`) and that took it from ~25 min to seconds; nothing
+comparable is available for the per-push settle.
+
+Practical consequence: piled collection at useful volume is an overnight job, not
+an interactive one. `n_envs` is the only real lever (the settle cost amortises
+across envs), so run it as high as VRAM allows rather than at the
+scattered-tuned optima in `Genesis/configs/measured/throughput_optimal.yaml`.
+
 ## 3. Q1 in full: the 5th DOF was never in play
 
 `simple_mpc/mpc.py:366-371` and `simple_mpc/oracle_mpc.py:302-304` both compute
