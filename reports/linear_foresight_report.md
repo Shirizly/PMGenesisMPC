@@ -22,6 +22,7 @@ Lyapunov controller) not attempted.
 | Q7 | Resolution: does 32×32 hurt vs 64×64? | **Yes** — and downsampling the *data* to 32 does not rescue it either. Native 64 + σ=1.0 is the only configuration where the pipeline is free. | High |
 | Q9 | Is the per-pixel test even the right one? | **No.** The paper's claim is comparative and control-based, and persistence — which wins every per-pixel comparison — cannot rank actions at all, so it is useless as a control baseline. On ranking, the operator captures 30-47% of oracle utility and the heuristic 42-74%; on the control-relevant `dV` for compact goals, linearity keeps 70-75% of achievable prediction (§2.4). | High |
 | Q10 | Is the nonlinearity distributed, or structured? | **Structured, and in one variable.** Within a contact-amount stratum, linear matches or beats boosted (share 91-110%). The 26-point gap is almost entirely dependence on how much material the blade meets — so a contact-switched linear operator should recover it, and §2.2's negative result was data starvation, not a refutation of the design (§2.6). | Medium-High |
+| Q11 | Can the paper's result be reproduced at all? | **Yes.** On piled, contact-sampled data the linear share reaches 101-108% on displacement and 89-99% of achievable dV for compact goals — linear is no longer measurably worse than nonlinear. The lever is the **action distribution** (contact-aware sampling), not the pile: §2.6 already got the same range by conditioning scattered data on contact, while §2.5 found packing density irrelevant (§2.9). | Medium (n=464) |
 | Q8 | What actually blocks the method here? | **Linearity.** Per-push displacement is 84% predictable from grid-visible features but only 58% linearly — linearity forfeits ~31% of the achievable signal (§2.3). The resampling issue is real but secondary, and fixed by a σ≈1 blur. | High |
 
 ---
@@ -615,6 +616,70 @@ Practical consequence: piled collection at useful volume is an overnight job, no
 an interactive one. `n_envs` is the only real lever (the settle cost amortises
 across envs), so run it as high as VRAM allows rather than at the
 scattered-tuned optima in `Genesis/configs/measured/throughput_optimal.yaml`.
+
+## 2.9 The paper's claim DOES hold — and the lever is contact-aware sampling
+
+With ~450 piled, contact-sampled transitions the linear/nonlinear gap closes.
+`variance_decomposition.py` on the piled data against the scattered reference:
+
+| target | regime | linear R² | boosted R² | **linear share** |
+|---|---|---|---|---|
+| mean band displacement | scattered + blind | 0.576 | 0.836 | 69% |
+| | **piled + contact-sampled** | **0.683** | 0.662 | **103%** |
+| forward displacement | piled + contact-sampled | 0.654 | 0.650 | **101%** |
+| max displacement | piled + contact-sampled | 0.818 | 0.760 | **108%** |
+
+And on the control-relevant target (`deltav_predictability.py`, best feature set):
+
+| goal | scattered share | **piled share** |
+|---|---|---|
+| point | 75% | **99%** |
+| stripe | 33% | **95%** |
+| centre | 74% | **89%** |
+| corner | 38% | 45% |
+
+**A linear model is no longer measurably worse than a nonlinear one** in this
+regime — which is the paper's central claim, reproduced. Only `corner` (an
+extended, off-centre target) still needs nonlinearity.
+
+### The operative change is the ACTION DISTRIBUTION, not the pile
+
+The two changes were made together, so attribution needs the earlier evidence,
+and it points clearly at one of them:
+
+- §2.6 stratified the **scattered** data by contact amount and found linear
+  shares of **91–110%** — the same range the piled data now shows. Conditioning
+  on contact was already sufficient.
+- §2.5 stratified the **scattered** data by packing density and found **no
+  improvement** in linear share (76 / 84 / 75%).
+- §2.8 measured the piled data as reaching only 1.09 cube-width packing and
+  **1.1 layers** — dense but not deep, i.e. inside the regime §2.5 covered.
+
+So the mechanism is: **blind sampling produced pushes spanning a huge range of
+contact, and that variation was the nonlinearity.** Contact-aware sampling
+removes it — the piled dataset's band displacement has sd 5.76 mm about a mean of
+23.6 mm, a far narrower and more homogeneous regime than the 0–49 mm spread of
+the blind data. Within it, the dynamics are linear.
+
+That is a satisfying resolution rather than a disappointing one. The paper
+collected 1000 pairs *per discretised action* on purpose; our blind sampler did
+not, and the mismatch — not the model class, the physics, or the representation —
+is what made linearity look insufficient.
+
+### Caveats, stated plainly
+
+- **n = 464.** The boosted model is data-limited here and its R² is depressed by
+  overfitting (it scores *below* linear, and its noise-control R² is −0.27
+  against −0.007 for linear). So the defensible claim is "**linear is no longer
+  clearly worse**", not "linear beats nonlinear". Re-running at 2000+ piled
+  transitions is the confirmation, and the collection is still going.
+- **Attribution is inferential**, resting on §2.5/§2.6, not on a factorial
+  experiment. The clean test is one run of *scattered* geometry with pile-aware
+  sampling — which the flags already support (`--pile-aware-actions` without
+  `--pile-extent`) and which would take ~15 min, since scattered collection is
+  ~100× cheaper per transition than piled.
+- These are scalar-summary results. §2.7 showed this level of insight does **not**
+  transfer to the per-pixel operator, and nothing here changes that.
 
 ## 3. Q1 in full: the 5th DOF was never in play
 
