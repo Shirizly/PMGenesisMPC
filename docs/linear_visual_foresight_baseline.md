@@ -1,9 +1,14 @@
 # Linear Visual Foresight (Suh & Tedrake 2020) as a Comparison Baseline
 
-**Status:** IN PROGRESS on branch `VisualForesight`. **Stage 0 (§7) is done** —
-`--perpendicular-pushes` / `--push-length` land the v1 action restriction, and
-the targeted single-operator collection plan is runnable and verified end to
-end. Stages 1+ (§4–5) are still plan only.
+**Status:** IN PROGRESS on branch `VisualForesight`. **Stages 0–2 are done**;
+results and the answered open questions are in
+[`reports/linear_foresight_report.md`](../reports/linear_foresight_report.md).
+Headline: the stage-2 gate (§10) **fails** — nothing beats persistence — and the
+obstruction is not the operator but the SE(2) rotation resampling on a
+pixel-scale-speckle occupancy field. Stage 3 (the Lyapunov closed loop, §4
+steps 3–5) is deliberately **not** built: the gate says it would measure noise.
+Corrections to this plan that the results forced are marked **[SUPERSEDED]**
+inline.
 **Source paper:** [`2002.09093v3.pdf`](2002.09093v3.pdf) — H.J.T. Suh & R. Tedrake,
 *The Surprising Effectiveness of Linear Models for Visual Foresight in Object Pile
 Manipulation*, arXiv:2002.09093v3 (16 Jun 2020).
@@ -496,9 +501,9 @@ abandoned early if the numbers say to.
 
 | # | Stage | Deliverable | Rough size |
 |---|---|---|---|
-| 0 | §7.2–7.3 (`--perpendicular-pushes`) + the oracle/human relative-angle probe (§7.5) | v1 collection flag, recorded in dataset metadata; evidence on whether the 5th DOF matters | ~0.5 day |
-| 1 | Steps 1 + 9 (warp + its tests) | `transforms/functional.py` warp helpers, green fast suite | ~0.5 day |
-| 2 | Step 6's extraction + Step 2b (fit) + Table-1 numbers | `fit_linear_foresight.py` produces operators; one-step held-out error vs persistence vs heuristics | ~1 day |
+| 0 ✅ | §7.2–7.3 (`--perpendicular-pushes`) + the oracle/human relative-angle probe (§7.5) | v1 collection flag, recorded in dataset metadata; evidence on whether the 5th DOF matters | ~0.5 day |
+| 1 ✅ | Steps 1 + 9 (warp + its tests) | `transforms/functional.py` warp helpers, green fast suite | ~0.5 day |
+| 2 ✅ | Step 6's extraction + Step 2b (fit) + Table-1 numbers | `fit_linear_foresight.py` produces operators; one-step held-out error vs persistence vs heuristics | ~1 day |
 | 3 | Steps 2a + 3a/3b + 4 + 5 (closed loop) | `heuristic_type: linear_foresight` runs end-to-end under `run_experiments.py`; first descent curve | ~1 day |
 | 4 | Steps 7 (uniform_transport) + 8 | Full comparison table + `reports/linear_foresight_report.md` | ~1 day |
 | 5 | Step 10 | Docs landed | ~0.5 day |
@@ -803,6 +808,15 @@ the footprint), and can escape past the plate edges. The DMDc report already fou
 **mass** to be precisely the descriptor group where linear prediction fails, and
 flagged it as physics-dependent. An operator that cannot predict total mass cannot
 predict a mass-normalized `V`.
+
+**[SUPERSEDED — this prediction was wrong.]** Measured over the collected
+transitions, world-frame mass is conserved to 0.4% (ratio 0.996, p05 0.984,
+p95 1.004), so the paper's `‖I_k‖₁ ≈ const` premise *holds* on our data. The
+gate did fail, but the cause was the SE(2) rotation resampling: on a
+pixel-scale-speckle occupancy field the warp round trip alone costs more than
+one 40 mm push changes. See
+[`reports/linear_foresight_report.md`](../reports/linear_foresight_report.md) §1
+and §4.
 
 **"Kill" is the wrong word — the result becomes the finding.** If the operator
 loses to the heuristics, you do not abandon the work: you report it. *"Published

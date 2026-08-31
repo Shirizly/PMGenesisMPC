@@ -1,0 +1,25 @@
+# Targeted single-operator dataset for the switched-linear visual-foresight
+# baseline: ONE push length (40 mm), perpendicular pushes only, one pile size
+# and material. Collected by
+# Genesis/configs/collection_foresight_single_operator.yaml.
+#
+# Consumed by fit_linear_foresight.py. Single physics group, so use
+# --split by-file / auto (test_pct/val_pct are 0 so everything pools into
+# "train" for a file-level holdout), exactly as the DMDc configs do.
+
+type: genesis
+
+paths:
+  - foresight/L040/cube/n50/size0.005
+
+val_pct: 0
+test_pct: 0
+
+resolution_scale: 0.5   # box 0.128 m -> 64x64 grid
+include_physics: true
+
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

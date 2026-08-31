@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -291,3 +291,138 @@ def draw_plate_soft(
     mask_l = torch.sigmoid((plate_length_px / 2.0 - rl.abs()) / sigma)
     mask_w = torch.sigmoid((plate_width_px / 2.0 - rw.abs()) / sigma)
     return mask_l * mask_w * float(intensity)
+
+
+# ---------------------------------------------------------------------------
+# SE(2) push-frame warp  (Suh & Tedrake 2020, Fig. 4)
+# ---------------------------------------------------------------------------
+#
+# The switched-linear visual-foresight baseline predicts in a canonical frame
+# in which every push looks the same: origin at the push midpoint, push
+# direction along +x. That collapses the action space from (start, angle,
+# length) to (length) alone, which is what lets one operator per length bin
+# cover the whole action space.
+#
+# Conventions, fixed here once so every downstream user reads them from one
+# place:
+#   * occupancy is (B, H, W) with H = rows, W = cols;
+#   * push endpoints are pixel coordinates in (col, row) order — the same
+#     order grid_sample's grid uses, and the same order the heuristic push
+#     models already receive from `_cam3d_to_grid` (they index rho[y, x] with
+#     p0 = (x, y));
+#   * grids must be SQUARE, because normalized [-1, 1] coordinates are only
+#     isotropic when H == W and a rotation in anisotropic normalized space is
+#     a rotation plus an unwanted shear;
+#   * align_corners=False throughout, so pixel i's center is at normalized
+#     (2i + 1)/N - 1.
+
+
+def _to_normalized(px: torch.Tensor, n: int) -> torch.Tensor:
+    """Pixel coordinate -> align_corners=False normalized coordinate."""
+    return (2.0 * px + 1.0) / n - 1.0
+
+
+def push_frame_transform(start_px: torch.Tensor, end_px: torch.Tensor,
+                         grid_res: Tuple[int, int]) -> torch.Tensor:
+    """SE(2) transform taking the canonical push frame to image coordinates.
+
+    Returns ``(B, 2, 3)`` suitable for ``torch.nn.functional.affine_grid``,
+    which wants the output->input map: a canonical-frame pixel at normalized
+    ``(x, y)`` reads the image at ``R(phi) @ (x, y) + m``, where ``phi`` is the
+    push direction and ``m`` the normalized push midpoint. So canonical (0, 0)
+    is the push midpoint and canonical +x is the push direction.
+
+    Parameters
+    ----------
+    start_px, end_px : (B, 2) push endpoints in pixels, (col, row) order.
+    grid_res         : (H, W), must be square.
+    """
+    H, W = int(grid_res[0]), int(grid_res[1])
+    if H != W:
+        raise ValueError(f"push_frame_transform needs a square grid, got {(H, W)}")
+
+    mid = 0.5 * (start_px + end_px)
+    delta = end_px - start_px
+    phi = torch.atan2(delta[:, 1], delta[:, 0])          # (col, row) frame
+    cos, sin = torch.cos(phi), torch.sin(phi)
+
+    mx = _to_normalized(mid[:, 0], W)
+    my = _to_normalized(mid[:, 1], H)
+
+    theta = torch.stack([
+        torch.stack([cos, -sin, mx], dim=-1),
+        torch.stack([sin,  cos, my], dim=-1),
+    ], dim=-2)                                            # (B, 2, 3)
+    return theta
+
+
+def invert_affine(theta: torch.Tensor) -> torch.Tensor:
+    """Inverse of a ``(B, 2, 3)`` rigid transform: [R|t] -> [R^T | -R^T t]."""
+    R, t = theta[:, :, :2], theta[:, :, 2:]
+    Rt = R.transpose(-1, -2)
+    return torch.cat([Rt, -Rt @ t], dim=-1)
+
+
+def warp_affine_occ(occ: torch.Tensor, theta: torch.Tensor,
+                    out_res: Optional[Tuple[int, int]] = None) -> torch.Tensor:
+    """Resample ``occ`` (B, H, W) through the output->input map ``theta``.
+
+    Differentiable in both `occ` and `theta` (plain ``grid_sample``), so a
+    model built on this stays usable by the gradient-descent MPC even though
+    the paper's controller only enumerates.
+    """
+    B, H, W = occ.shape
+    oh, ow = (H, W) if out_res is None else (int(out_res[0]), int(out_res[1]))
+    grid = torch.nn.functional.affine_grid(
+        theta, (B, 1, oh, ow), align_corners=False)
+    out = torch.nn.functional.grid_sample(
+        occ.unsqueeze(1), grid, mode='bilinear',
+        padding_mode='zeros', align_corners=False)
+    return out.squeeze(1)
+
+
+def to_push_frame(occ: torch.Tensor, start_px: torch.Tensor,
+                  end_px: torch.Tensor,
+                  out_res: Optional[Tuple[int, int]] = None) -> torch.Tensor:
+    """Warp occupancy into the canonical push frame (their ``T(I)``)."""
+    theta = push_frame_transform(start_px, end_px, occ.shape[-2:])
+    return warp_affine_occ(occ, theta, out_res)
+
+
+def from_push_frame(occ_canon: torch.Tensor, start_px: torch.Tensor,
+                    end_px: torch.Tensor,
+                    out_res: Tuple[int, int]) -> torch.Tensor:
+    """Warp a canonical-frame image back to image coordinates (``T^-1``)."""
+    theta = push_frame_transform(start_px, end_px, out_res)
+    return warp_affine_occ(occ_canon, invert_affine(theta), out_res)
+
+
+def push_frame_validity_mask(start_px: torch.Tensor, end_px: torch.Tensor,
+                             grid_res: Tuple[int, int],
+                             canon_res: Optional[Tuple[int, int]] = None
+                             ) -> torch.Tensor:
+    """Their ``M = T^-1(T(1))`` — where a round trip preserves information.
+
+    Rotating a square image inside a same-sized square loses the corners, so
+    the prediction is only trustworthy where this mask is ~1; elsewhere the
+    caller keeps the original image (see `blend_push_prediction`).
+    """
+    B = start_px.shape[0]
+    H, W = int(grid_res[0]), int(grid_res[1])
+    ones = torch.ones((B, H, W), dtype=start_px.dtype, device=start_px.device)
+    canon = to_push_frame(ones, start_px, end_px, canon_res)
+    return from_push_frame(canon, start_px, end_px, (H, W))
+
+
+def blend_push_prediction(pred: torch.Tensor, occ: torch.Tensor,
+                          mask: torch.Tensor,
+                          threshold: float = 0.5) -> torch.Tensor:
+    """Recombine a warped prediction with the original image (their Fig. 4).
+
+    A hard threshold on the validity mask rather than a soft alpha blend: the
+    mask is ~1 in the interior and ~0 outside, and soft-blending its thin
+    bilinear ramp would darken a one-pixel ring at the boundary on every
+    single step — which compounds over a closed-loop episode.
+    """
+    keep = (mask >= threshold).to(pred.dtype)
+    return keep * pred + (1.0 - keep) * occ

@@ -115,6 +115,37 @@ real-vs-candidate tagging) is tracked by the env wrapper's own step
 counter — no other function signature in the MPC loops changed to support
 this.
 
+## 2.0 SE(2) Push-Frame Warp
+
+`transforms/functional.py` also owns the canonical push-frame warp of
+Suh & Tedrake 2020 Fig. 4 — `push_frame_transform`, `to_push_frame`,
+`from_push_frame`, `push_frame_validity_mask`, `blend_push_prediction`,
+`invert_affine`, `warp_affine_occ`. Stateless torch, differentiable
+(`grid_sample`), tested in `tests/test_push_frame_warp.py`.
+
+Conventions, fixed in one place because three callers need to agree:
+
+- occupancy is `(B, H, W)`, rows then cols;
+- push endpoints are pixels in **(col, row)** order — matching `grid_sample`'s
+  grid order and what the heuristic push models already receive;
+- **grids must be square**, and the helper raises otherwise: normalized
+  `[-1, 1]` coordinates are only isotropic when `H == W`, and a rotation in
+  anisotropic normalized space silently shears;
+- `align_corners=False` throughout;
+- the canonical frame puts the push midpoint at the image center and the push
+  direction along `+x`.
+
+Two measured properties worth knowing before building on this:
+
+- The warp is **mass-preserving** (±0.00%), so any mass drift observed
+  downstream belongs to the physics or the model, never to the resampling.
+- The round trip is **not** free on high-frequency fields. Bilinear rotation of
+  an occupancy field with features at the pixel scale costs more accuracy than
+  one push changes; a σ≈1 px pre-smoothing removes the cost entirely. See
+  `reports/linear_foresight_report.md` §1. Score any warp-based image model
+  against an identity-operator baseline (`A = I`) as well as persistence, or
+  resampling loss gets silently attributed to the model.
+
 ## 2.1 Action Sampling and Action-Space Restriction
 
 `Genesis/action_sampling.py` owns push-action geometry that is *pure torch* —

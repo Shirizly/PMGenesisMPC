@@ -96,6 +96,12 @@ model/
     SpatTransNet.py         EulerianSTN          → model type "spatial-transformer"
     UNetModels_modular.py   UNet (config-driven) → model type "unet-modular"
 
+fit_linear_foresight.py  fits and falsifies the switched-linear pixel operator
+                        of Suh & Tedrake 2020 on a single-push-length dataset;
+                        persistence / identity-operator / heuristic baselines,
+                        swept-region metric, ridge sweep, non-negative fit.
+                        Results: reports/linear_foresight_report.md
+
 transforms/
   functional.py         particles_to_occupancy (+ footprint_radius hard-disk
                         splat, shape_factor for non-spherical particles),
