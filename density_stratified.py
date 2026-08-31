@@ -21,6 +21,12 @@ from variance_decomposition import DEFAULT_GLOB, band_frame, features, load, r2,
 ap = argparse.ArgumentParser()
 ap.add_argument("--glob", default=DEFAULT_GLOB)
 ap.add_argument("--bins", type=int, default=3)
+ap.add_argument("--by", default="packing", choices=["packing", "contact"],
+                help="stratify by local packing (pile hypothesis) or by how much "
+                     "material the blade meets (perturbation-size hypothesis: a "
+                     "linear operator is a first-order approximation, so it "
+                     "should suit SMALL perturbations best -- which would imply "
+                     "shorter pushes rather than denser piles)")
 a = ap.parse_args()
 
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -36,6 +42,11 @@ dmat = dmat + torch.eye(s0.shape[1], device=dev)[None] * big
 nn = dmat.min(dim=-1).values
 cnt = inband.float().sum(1).clamp_min(1)
 packing = (torch.where(inband, nn, torch.zeros_like(nn)).sum(1) / cnt / CUBE).cpu().numpy()
+if a.by == "contact":
+    # exogenous perturbation size: particles the blade will sweep. Stratifying
+    # by the OUTCOME (actual displacement) would be circular -- it restricts the
+    # range of the very quantity being predicted.
+    packing = inband.float().sum(1).cpu().numpy()
 
 disp = (s1 - s0)[..., :2].norm(dim=-1)
 y = ((disp * inband.float()).sum(1) / cnt * MM).cpu().numpy()
@@ -52,9 +63,9 @@ def fit(X, yy, groups):
     return float(np.mean(rl)), float(np.mean(rg))
 
 qs = np.quantile(packing, np.linspace(0, 1, a.bins + 1))
-print(f"n={len(y)}  mean-NN distance among swath particles, in cube widths")
-print(f"  overall: median {np.median(packing):.2f} cube widths "
-      f"(1.0 = touching, >2 = isolated)")
+_unit = "cube widths (1.0=touching)" if a.by == "packing" else "particles in swath"
+print(f"n={len(y)}  stratifying by {a.by}: {_unit}")
+print(f"  overall median {np.median(packing):.2f}")
 print(f"\n{'packing stratum':>22s} {'n':>6s} {'NN dist':>9s} {'linear R2':>10s} "
       f"{'boosted R2':>11s} {'linear share':>13s}")
 print("-" * 78)
@@ -64,8 +75,17 @@ for i in range(a.bins):
         print(f"  stratum {i}: too few samples/runs"); continue
     L, G = fit(Xo[m], y[m], runs[m])
     share = f"{100 * L / G:.0f}%" if G > 0.02 else "n/a"
-    lbl = f"{'densest' if i == 0 else ('sparsest' if i == a.bins - 1 else 'middle')}"
+    if a.by == "packing":
+        lbl = 'densest' if i == 0 else ('sparsest' if i == a.bins - 1 else 'middle')
+    else:
+        lbl = 'smallest perturb' if i == 0 else ('largest perturb' if i == a.bins - 1 else 'middle')
     print(f"{lbl:>22s} {int(m.sum()):6d} {packing[m].mean():9.2f} {L:10.3f} "
           f"{G:11.3f} {share:>13s}")
-print("\nIf the linear share RISES toward the densest stratum, the pile hypothesis\n"
-      "has support: linearity suits packed material better than isolated objects.")
+if a.by == "packing":
+    print("\nIf the linear share RISES toward the densest stratum, the pile "
+          "hypothesis\nhas support: linearity suits packed material better than "
+          "isolated objects.")
+else:
+    print("\nIf the linear share RISES toward the SMALLEST perturbation, "
+          "linearity suits\nsmall pushes -- implying shorter pushes, not denser "
+          "piles, is the lever.")

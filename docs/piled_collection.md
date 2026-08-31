@@ -134,11 +134,27 @@ against the pile. If both are passed, `pile_aware` wins.
 
 ### What it does not guarantee
 
-- **A fixed `push_length` may still be shortened** where the pile sits close
-  enough to a wall that the full travel would leave the tray. This is reported as
-  a `WARNING`, because a shortened push is no longer in its length bin. With a
-  centred pile it should not occur; the warning is there so a change of geometry
-  cannot make it silent.
+- **A fixed `push_length` is often shortened, and 40 mm is too long for this
+  geometry.** Measured on a 30-cube pile in the 128 mm tray: **34% of pushes
+  (11/32) could not travel 40 mm** from their pile-contact start without leaving
+  the tray. This is reported as a `WARNING`, because a shortened push is no
+  longer in its length bin.
+
+  The arithmetic, which the first version of this document got wrong by assuming
+  a centred pile makes it a non-issue: the blade starts *outside* the pile on the
+  near side, so the span consumed is
+
+      pile diameter + clearance + push length  ~=  34 + 5 + 40  =  79 mm
+
+  against a usable box of only 47-85 mm depending on push direction (the box is
+  yaw-dependent, and along a diagonal the binding axis is the tighter one). So
+  **keep `push_length` at or below ~25 mm for a 30-cube pile in this tray**, or
+  expect a third of the dataset to fall out of its length bin.
+
+  This only matters for a *single-operator* fit, which needs one length. Anything
+  that treats push length as an input (the variance decomposition, a
+  continuous-`u` operator) is unaffected — the length simply becomes another
+  feature, and the `WARNING` count tells you how much variation there is.
 - **`min_swath_particles` can be unreachable** (e.g. a sparse configuration where
   no lateral alignment catches enough particles). Those draws are counted and
   logged, and `pile_contact_starts` returns an `ok` mask so a caller can drop

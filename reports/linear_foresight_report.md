@@ -21,6 +21,7 @@ Lyapunov controller) not attempted.
 | Q6 | Does the uniform-deposit-ahead assumption hold in 3-D granular? | **Qualitatively yes** — their Fig. 5 structure reproduces: depletion across the swept band, deposition peaking just ahead. | Medium |
 | Q7 | Resolution: does 32×32 hurt vs 64×64? | **Yes** — and downsampling the *data* to 32 does not rescue it either. Native 64 + σ=1.0 is the only configuration where the pipeline is free. | High |
 | Q9 | Is the per-pixel test even the right one? | **No.** The paper's claim is comparative and control-based, and persistence — which wins every per-pixel comparison — cannot rank actions at all, so it is useless as a control baseline. On ranking, the operator captures 30-47% of oracle utility and the heuristic 42-74%; on the control-relevant `dV` for compact goals, linearity keeps 70-75% of achievable prediction (§2.4). | High |
+| Q10 | Is the nonlinearity distributed, or structured? | **Structured, and in one variable.** Within a contact-amount stratum, linear matches or beats boosted (share 91-110%). The 26-point gap is almost entirely dependence on how much material the blade meets — so a contact-switched linear operator should recover it, and §2.2's negative result was data starvation, not a refutation of the design (§2.6). | Medium-High |
 | Q8 | What actually blocks the method here? | **Linearity.** Per-push displacement is 84% predictable from grid-visible features but only 58% linearly — linearity forfeits ~31% of the achievable signal (§2.3). The resampling issue is real but secondary, and fixed by a σ≈1 blur. | High |
 
 ---
@@ -476,6 +477,59 @@ multi-layer pile with load transferred through its depth. The densest stratum
 (1.21 cube widths) is touching-contact, so it is a fair proxy for in-plane
 packing, but it cannot proxy for depth. The piled dataset remains the test —
 expectations should now be modest.
+
+## 2.6 The nonlinearity is almost entirely ONE scalar — the contact amount
+
+The alternative to the pile hypothesis: a linear operator is a first-order
+approximation, so it should suit *small perturbations*. Stratifying by an
+exogenous measure of perturbation size — particles in the blade's swath, known
+before acting — and re-running the decomposition inside each stratum
+(`density_stratified.py --by contact`):
+
+| stratum | n | particles in swath | linear R² | boosted R² | **linear share** |
+|---|---|---|---|---|---|
+| smallest perturbation | 1829 | 1.24 | 0.708 | 0.781 | **91%** |
+| middle | 1909 | 3.51 | 0.822 | 0.797 | **103%** |
+| middle | 1789 | 5.48 | 0.810 | 0.737 | **110%** |
+| largest perturbation | 2153 | 8.30 | 0.782 | 0.718 | **109%** |
+
+**Within a contact stratum, a linear model matches or beats the nonlinear one.**
+Shares above 100% mean boosted trees overfit once the range is narrowed.
+
+So the 26-point linear/nonlinear gap of §2.3 is not distributed nonlinearity —
+it is **almost entirely the dependence on a single scalar, how much material the
+blade meets**. Conditioned on that scalar, the dynamics are essentially linear.
+This also explains §2.3's "threshold-like +0.11" residual: trees were modelling
+contact gating, which is exactly a threshold in this variable.
+
+### This vindicates the switched-linear-on-contact design, and explains why §2.2 failed
+
+§2.2 tested precisely this — one operator per contact bin — and found it
+slightly *worse* than a single operator. That result stands as measured but was
+**not a refutation of the design**; it was data starvation. The switch was
+applied to a 32×32 **pixel operator** with `D = 1024` unknowns per row and
+`M/D = 0.73` per bin, so each bin's fit was underdetermined before
+specialisation could pay. At the scalar level here, with ~1800 samples for ~30
+features, the same switch recovers essentially all the headroom.
+
+**Concrete prediction, and the cheapest next experiment:** a switched-linear
+*pixel* operator should recover most of the nonlinear headroom too, given
+`M >> D` per bin. Routes to that, in order of cost:
+
+1. **Shrink `D` before splitting.** The crop sweep in §2 already showed cropping
+   the canonical window helps monotonically; at `crop = 0.25` (`D = 256`) three
+   bins of the existing 7 680 transitions give `M/D ≈ 8`. This needs no new data
+   at all and is the first thing to run.
+2. Fit the operator on a **low-dimensional descriptor** rather than pixels, which
+   is what `dmdc_baseline.py` already does — combining its representation with a
+   contact-switched operator is a well-posed fit at existing data volumes.
+3. More data per bin.
+
+Note this reframes the whole comparison. The paper's model class is
+*switched*-linear, with the switch on the discretised action. Our finding is that
+on granular piles the switch needs to be on the **state-action contact amount**,
+not on the action alone — a small, principled extension of their model rather
+than a replacement.
 
 ## 3. Q1 in full: the 5th DOF was never in play
 
