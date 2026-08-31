@@ -1,0 +1,30 @@
+# Pooled single-operator dataset: both 40 mm perpendicular collection runs.
+#
+# Why pooled: the switched (per-contact-bin) operator splits the data three
+# ways, and a D x D least-squares fit needs M >> D per bin. At 32x32 (D=1024)
+# a single 2560-transition run gives M/D = 0.83 per bin -- underdetermined,
+# which is what made the first per-bin comparison uninterpretable. Pooling both
+# runs (~7680 transitions) gives M/D ~ 2.5.
+#
+# Both paths were collected with identical geometry, material and action
+# restriction (perpendicular, 40 mm); only the seed and the settled-state bank
+# differ, so they are one physics group. The 24 files also make the
+# leave-one-run-out CV in loro_foresight.py far less noisy than 8 did.
+
+type: genesis
+
+paths:
+  - foresight/L040/cube/n50/size0.005
+  - foresight/L040b/cube/n50/size0.005
+
+val_pct: 0
+test_pct: 0
+
+resolution_scale: 0.5   # box 0.128 m -> 64x64 grid
+include_physics: true
+
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

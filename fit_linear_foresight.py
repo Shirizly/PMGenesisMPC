@@ -113,62 +113,115 @@ def verify_pixel_mapping(data, start_px, end_px, grid_res, n_check=64):
 # =====================================================================
 
 
-def canonicalise(occ, start_px, end_px, res, batch=512):
+def canonicalise(occ, start_px, end_px, res, scale=1.0, batch=512):
     """Warp to the push frame and resample to `res` x `res`."""
     outs = []
     for i in range(0, occ.shape[0], batch):
         sl = slice(i, i + batch)
-        outs.append(to_push_frame(occ[sl], start_px[sl], end_px[sl], (res, res)))
+        outs.append(to_push_frame(occ[sl], start_px[sl], end_px[sl],
+                                  (res, res), scale))
     return torch.cat(outs, dim=0)
 
 
-def fit_operator(Y0, Y1, ridge: float = 0.0):
-    """Matrix least squares  A = argmin ||Y1 - A Y0||_F,  closed form.
+def fit_operator(Y0, Y1, ridge: float = 0.0, toward_identity: bool = True):
+    """Matrix least squares  A = argmin ||Y1 - A Y0||_F + ridge*||A - A0||_F.
 
     Y0, Y1 : (D, M) — columns are vectorised canonical-frame images.
 
-    Their eq. (8) with an optional ridge term. The ridge is not decoration: the
-    row decomposition (their eq. 10) gives each of the D output pixels its own
-    problem with D unknowns, so at D = 1024 the paper's own 800 training pairs
-    left every row underdetermined. Regularisation here is structural.
+    Their eq. (8). The regularisation target matters more than the strength:
+
+    Plain ridge shrinks A toward ZERO, i.e. toward "the pile vanishes". That is
+    the wrong prior for a transport operator and it is actively harmful when the
+    fit is underdetermined, which it usually is -- the row decomposition (their
+    eq. 10) gives each of the D output pixels its own D-unknown problem, so even
+    the paper's own 800 pairs left every row underdetermined at 32x32. Measured
+    consequence: at M/D = 0.73 the operator does WORSE than warped persistence
+    on the low-movement bin, because where the data cannot pin it down it decays
+    toward erasing material rather than toward leaving it alone.
+
+    `toward_identity` shrinks toward A = I (persistence) instead, so an
+    underdetermined fit degrades gracefully to "nothing moved" -- which is the
+    correct behaviour and, not coincidentally, exactly the persistence prior the
+    descriptor-level work uses (`analytic_descriptors_latent_space_plan_v2.md`).
     """
     D = Y0.shape[0]
     G = Y0 @ Y0.T
+    C = Y1 @ Y0.T
     if ridge > 0:
-        G = G + ridge * torch.eye(D, dtype=G.dtype, device=G.device)
-    return torch.linalg.solve(G.T, (Y1 @ Y0.T).T).T
+        eye = torch.eye(D, dtype=G.dtype, device=G.device)
+        G = G + ridge * eye
+        if toward_identity:
+            C = C + ridge * eye
+    return torch.linalg.solve(G.T, C.T).T
 
 
-def fit_operator_nonneg(Y0, Y1, max_iter: int = 300, lr: float = 1.0):
-    """Their eq. (9) non-negativity constraint, A >= 0.
+def fit_operator_nonneg(Y0, Y1, max_iter: int = 4000, tol: float = 1e-6,
+                        ridge: float = 0.0, toward_identity: bool = True,
+                        report: bool = False):
+    """Their eq. (9) non-negativity constraint, A >= 0, by FISTA.
 
     Projected gradient rather than D independent QPs: the row decomposition
-    makes the exact QP tractable in principle, but D=1024 scipy.optimize.nnls
-    calls of 1024 variables is minutes-to-hours, while projected gradient on
-    the whole matrix is seconds on GPU and reaches the same feasible set. The
-    objective is convex with a Lipschitz gradient, so this converges to the
-    constrained optimum.
+    makes the exact QP tractable in principle, but D scipy.optimize.nnls calls
+    of D variables is minutes-to-hours, while a first-order method on the whole
+    matrix is seconds on GPU and reaches the same feasible set. The objective is
+    convex with a Lipschitz gradient, so this converges to the constrained
+    optimum.
+
+    Shrinks toward A = I when `ridge > 0` and `toward_identity` (see
+    `fit_operator` for why the target matters more than the strength), and
+    starts from A = I.
+
+    FISTA rather than plain projected gradient, and 4000 iterations rather than
+    300, because plain PG at 300 iterations was NOT converged -- measured, the
+    relative residual was still falling at 20k iterations (0.4766 -> 0.4602 ->
+    0.4558). Since PG starts from A = 0, under-convergence biases the operator
+    toward predicting *less* mass than the truth, which looks exactly like a
+    model that erases the pile. Every `nonneg` number from before this fix was
+    pessimistic. `report=True` prints the convergence trace so a recurrence is
+    visible rather than silent.
     """
     G = Y0 @ Y0.T
     C = Y1 @ Y0.T
-    step = lr / float(torch.linalg.eigvalsh(G)[-1])
-    A = torch.zeros_like(C)
-    for _ in range(max_iter):
-        A = (A - step * (A @ G - C)).clamp_min_(0.0)
+    eye = torch.eye(Y0.shape[0], dtype=G.dtype, device=G.device)
+    if ridge > 0:
+        G = G + ridge * eye
+        if toward_identity:
+            C = C + ridge * eye
+    L = 2.0 * float(torch.linalg.eigvalsh(G)[-1])
+    # Start from the identity, not from zero: it is both the correct prior and
+    # a far better initialisation, so a truncated run degrades to persistence
+    # rather than to erasing the pile.
+    A = eye.clone()
+    Z = A.clone()
+    t = 1.0
+    for i in range(max_iter):
+        A_new = (Z - (2.0 / L) * (Z @ G - C)).clamp_min_(0.0)
+        t_new = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t * t))
+        Z = A_new + ((t - 1.0) / t_new) * (A_new - A)
+        step = float((A_new - A).norm() / A_new.norm().clamp_min(1e-12))
+        A, t = A_new, t_new
+        if report and (i < 3 or (i + 1) % 1000 == 0):
+            print(f"      iter {i+1:6d}  rel-resid "
+                  f"{float((Y1 - A @ Y0).norm() / Y1.norm()):.5f}  "
+                  f"step {step:.2e}")
+        if step < tol:
+            if report:
+                print(f"      converged at iter {i+1} (step < {tol})")
+            break
     return A
 
 
-def predict_world(A, occ, start_px, end_px, res, grid_res, batch=256):
+def predict_world(A, occ, start_px, end_px, res, grid_res, scale=1.0, batch=256):
     """Full pipeline: warp -> apply A -> unwarp -> blend with the original."""
     H, W = grid_res
     outs = []
     for i in range(0, occ.shape[0], batch):
         sl = slice(i, i + batch)
         o, s, e = occ[sl], start_px[sl], end_px[sl]
-        canon = to_push_frame(o, s, e, (res, res))
+        canon = to_push_frame(o, s, e, (res, res), scale)
         pred_c = (A @ canon.reshape(canon.shape[0], -1).T).T.reshape(-1, res, res)
-        back = from_push_frame(pred_c, s, e, (H, W))
-        mask = push_frame_validity_mask(s, e, (H, W), (res, res))
+        back = from_push_frame(pred_c, s, e, (H, W), scale)
+        mask = push_frame_validity_mask(s, e, (H, W), (res, res), scale)
         outs.append(blend_push_prediction(back, o, mask).clamp_(0.0, 1.0))
     return torch.cat(outs, dim=0)
 
@@ -232,6 +285,27 @@ def swept_region_mask(start_px, end_px, grid_res, half_width_px, pad_px):
     return ((dist <= half_width_px) & (ahead <= pad_px)).float()
 
 
+def contact_score(occ, start_px, end_px, grid_res, plate_px):
+    """How much pile sits in the blade's path — the switching variable.
+
+    Computable from (I_k, u) alone, so it can select an operator at inference
+    time with no knowledge of the outcome. That is what makes a per-bin model
+    a legitimate switched system rather than an oracle.
+
+    Measured against the actual movement it is meant to stand in for
+    (||I_1 - I_0|| in the swept band, n=2560): Spearman 0.47. Informative but
+    far from clean — the bins separate in the mean (3.9 / 5.9 / 7.6) while
+    overlapping heavily. Three variants (mass in the full swept band, mass in
+    the blade path, occupied area) all score 0.44-0.47, so the exact band
+    definition does not matter; the blade path without the forward deposit pad
+    is used because it is the most direct statement of "what the blade will
+    hit".
+    """
+    reg = swept_region_mask(start_px, end_px, grid_res,
+                            half_width_px=0.5 * plate_px + 2.0, pad_px=0.0)
+    return (occ * reg).sum(dim=(1, 2))
+
+
 def metrics(pred, truth, occ_prev, region=None):
     """Resolution-comparable metrics plus the paper's own raw Frobenius.
 
@@ -268,6 +342,22 @@ def main():
     ap.add_argument("dataset_cfg")
     ap.add_argument("--res", type=int, default=32,
                     help="canonical-frame fit resolution (32 = the paper's)")
+    ap.add_argument("--split-seed", type=int, default=0,
+                    help="seed for the episode-level holdout, so different "
+                         "configurations are compared on the SAME test set")
+    ap.add_argument("--crop", type=float, default=1.0,
+                    help="fraction of the image the canonical window spans. "
+                         "1.0 = the paper's full-image warp. Everything a push "
+                         "affects lies within ~12 px of it (measured), so a "
+                         "full-image operator spends nearly all its parameters "
+                         "modelling the identity; cropping shrinks it by "
+                         "1/crop**4 and is what lets a per-bin fit be "
+                         "well-determined from modest data.")
+    ap.add_argument("--bins", type=int, default=0,
+                    help="fit one operator per contact-score bin (0 = single "
+                         "operator). Bin edges are quantiles computed on the "
+                         "TRAIN split only, then applied to test, so the "
+                         "switching rule is never fitted on held-out data.")
     ap.add_argument("--blur", type=float, default=0.0,
                     help="Gaussian sigma (px) applied to the occupancy of BOTH "
                          "frames before anything else, so every model incl. "
@@ -354,6 +444,12 @@ def main():
               "transposed operator")
         return
 
+    # Seed the holdout. split_by_episode uses an unseeded randperm, so without
+    # this every invocation gets a different test set and configurations cannot
+    # be compared against each other (caught the hard way: persistence, which
+    # cannot depend on crop or resolution, moved by 0.017 rms across a crop
+    # sweep). Same caveat the DMDc report flags for its by-file splits.
+    torch.manual_seed(args.split_seed)
     m_tr, m_te = split_by_episode(data, holdout_frac=args.holdout_frac)
     n_runs = int(data.episode_ids.unique().numel())
     print(f"split: {int(m_tr.sum())} train / {int(m_te.sum())} test "
@@ -376,8 +472,12 @@ def main():
 
     R = args.res
     print(f"\ncanonicalising ({R}x{R}) ...")
-    Y0 = canonicalise(occ_tr, s_tr, e_tr, R).reshape(occ_tr.shape[0], -1).T
-    Y1 = canonicalise(occ1_tr, s_tr, e_tr, R).reshape(occ_tr.shape[0], -1).T
+    CR = args.crop
+    if CR != 1.0:
+        print(f"  canonical window spans {100 * CR:.0f}% of the image "
+              f"= {CR * W:.0f} px, resampled to {R}x{R}")
+    Y0 = canonicalise(occ_tr, s_tr, e_tr, R, CR).reshape(occ_tr.shape[0], -1).T
+    Y1 = canonicalise(occ1_tr, s_tr, e_tr, R, CR).reshape(occ_tr.shape[0], -1).T
     D, M = Y0.shape
     print(f"  operator is {D}x{D} = {D * D:,} params from M={M} pairs "
           f"({'OVER' if M > D else 'UNDER'}determined per row: M={M} vs D={D})")
@@ -393,7 +493,11 @@ def main():
     results, results_sw = {}, {}
     wanted = [s.strip() for s in args.estimators.split(",") if s.strip()]
 
+    global _PRED_CACHE
+    _PRED_CACHE = {}
+
     def record(name, pred):
+        _PRED_CACHE[name] = pred
         results[name] = metrics(pred, occ1_te, occ_te)
         results_sw[name] = metrics(pred, occ1_te, occ_te, region=region)
 
@@ -406,7 +510,42 @@ def main():
         # a fitted operator is being charged for resampling loss that
         # persistence never pays, and the comparison is not a fair one.
         eye = torch.eye(R * R, device=dev)
-        record("identity(pipeline)", predict_world(eye, occ_te, s_te, e_te, R, (H, W)))
+        record("identity(pipeline)",
+               predict_world(eye, occ_te, s_te, e_te, R, (H, W), CR))
+
+    # ---- switched operator: one per contact-score bin -------------------
+    if args.bins > 1:
+        plate_px = 0.04 / 0.128 * W
+        c_tr = contact_score(occ_tr, s_tr, e_tr, (H, W), plate_px)
+        c_te = contact_score(occ_te, s_te, e_te, (H, W), plate_px)
+        qs = torch.linspace(0, 1, args.bins + 1, device=dev)[1:-1]
+        edges = torch.quantile(c_tr, qs)
+        b_tr = torch.bucketize(c_tr, edges)
+        b_te = torch.bucketize(c_te, edges)
+        names = ({2: ["low", "high"],
+                  3: ["barely", "mildly", "significantly"]}
+                 .get(args.bins, [f"bin{i}" for i in range(args.bins)]))
+        print(f"\ncontact-score bins (train quantiles at "
+              f"{[round(float(x), 1) for x in edges]}):")
+
+        pred_sw = occ_te.clone()
+        for b in range(args.bins):
+            mtr, mte = (b_tr == b), (b_te == b)
+            if int(mtr.sum()) < 10 or int(mte.sum()) == 0:
+                print(f"  {names[b]:>14s}: too few samples, skipped")
+                continue
+            Yb0 = canonicalise(occ_tr[mtr], s_tr[mtr], e_tr[mtr], R, args.crop
+                               ).reshape(int(mtr.sum()), -1).T
+            Yb1 = canonicalise(occ1_tr[mtr], s_tr[mtr], e_tr[mtr], R, args.crop
+                               ).reshape(int(mtr.sum()), -1).T
+            Ab = fit_operator_nonneg(Yb0, Yb1)
+            pred_sw[mte] = predict_world(Ab, occ_te[mte], s_te[mte],
+                                         e_te[mte], R, (H, W), args.crop)
+            print(f"  {names[b]:>14s}: {int(mtr.sum()):5d} train / "
+                  f"{int(mte.sum()):4d} test")
+        record("switched-nonneg", pred_sw)
+        globals()["_BIN_TE"] = (b_te, names)
+        globals()["_GATE_TE"] = b_te
 
     fits = [("ols", lambda: fit_operator(Y0, Y1, 0.0)),
             ("nonneg", lambda: fit_operator_nonneg(Y0, Y1))]
@@ -420,8 +559,21 @@ def main():
         t = time.time()
         A = fit()
         t_fit = time.time() - t
-        record(f"linear-{name}", predict_world(A, occ_te, s_te, e_te, R, (H, W)))
+        record(f"linear-{name}",
+               predict_world(A, occ_te, s_te, e_te, R, (H, W), CR))
         print(f"  fitted {name} in {t_fit:.1f}s")
+
+    # ---- gated operator: ONE operator, but trust it only where the contact
+    # score says the push does real work. Cheaper than per-bin models (no data
+    # is split) and it targets the actual failure: the model only does harm in
+    # the low-contact bin, where "nothing changed" is nearly exact.
+    if args.bins > 1 and "linear-nonneg" in _PRED_CACHE:
+        b_te = globals()["_GATE_TE"]
+        for g in range(1, args.bins):
+            gated = _PRED_CACHE["linear-nonneg"].clone()
+            fallback = b_te < g
+            gated[fallback] = occ_te[fallback]
+            record(f"gated-nonneg(>=bin{g})", gated)
 
     for h in [x.strip() for x in args.heuristics.split(",") if x.strip()]:
         try:
@@ -444,6 +596,23 @@ def main():
                   f"{v['explained']:10.4f}")
     print("\nexplained = 1 - ||pred-truth|| / ||I_k+1 - I_k||; <= 0 means the "
           "model is no better than predicting no change.")
+
+    if args.bins > 1 and "_BIN_TE" in globals():
+        b_te, names = globals()["_BIN_TE"]
+        print(f"\n=== per-bin breakdown, swept region (explained; "
+              f"0 = persistence) ===")
+        keys = [k for k in results_sw
+                if k.startswith(("switched", "linear-nonneg", "heuristic-cum"))]
+        print(f"{'bin':>15s} {'n':>5s} " + "".join(f"{k[:18]:>19s}" for k in keys))
+        for b in range(args.bins):
+            m = (b_te == b)
+            if int(m.sum()) == 0:
+                continue
+            row = f"{names[b]:>15s} {int(m.sum()):5d} "
+            for k in keys:
+                pk = _PRED_CACHE[k]
+                row += f"{metrics(pk[m], occ1_te[m], occ_te[m], region=region[m])['explained']:19.4f}"
+            print(row)
 
 
 if __name__ == "__main__":

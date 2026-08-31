@@ -15,12 +15,12 @@ Lyapunov controller) not attempted.
 |---|---|---|---|
 | Q1 | Does the 5th action DOF (independent plate yaw) matter? | **No — and it was never available.** Every MPC variant *derives* the yaw as `atan2(dy,dx) + π/2`. Measured over 77k executed pushes: 99.6% perpendicular. Training data: 7.5%. **v1 costs nothing, and the existing pipeline has a train/deploy covariate shift.** | High (87k actions) |
 | Q2 | Does the pixel operator beat the geometric heuristics? | **Only once the field is smoothed** — then yes, replicating the paper's comparative claim (`linear-nonneg` 0.1241 vs `cumulative` 0.1263, `spread` 0.1362). On raw occupancy it loses to both. | Medium |
-| Q3 | Does it beat **persistence** (the stage-2 gate)? | **In aggregate no; where there is signal, yes.** Stratified by actual change: it *beats* persistence on the top two quartiles (explains +0.07, +0.18) and loses badly on the bottom two. The aggregate verdict is an artifact of the action distribution, not the model — see §2.1. | High |
+| Q3 | Does it beat **persistence** (the stage-2 gate)? | **No.** In physical units its best case is a 3-4% error reduction, and it is worse than doing nothing at both extremes of contact. §2.1's optimistic reading did not survive grounding the metric — see §2.3. | High |
 | Q4 | Is mass conserved (the predicted failure mode)? | **Yes — ratio 0.996.** My hypothesis was wrong; mass is not the obstruction. | High |
 | Q5 | Does non-negativity beat plain ridge (their Fig. 7)? | **In 3 of 4 configurations.** Directionally replicated, not universal. | Medium |
 | Q6 | Does the uniform-deposit-ahead assumption hold in 3-D granular? | **Qualitatively yes** — their Fig. 5 structure reproduces: depletion across the swept band, deposition peaking just ahead. | Medium |
 | Q7 | Resolution: does 32×32 hurt vs 64×64? | **Yes** — and downsampling the *data* to 32 does not rescue it either. Native 64 + σ=1.0 is the only configuration where the pipeline is free. | High |
-| Q8 | What actually blocks the method here? | **The SE(2) rotation resampling.** On raw occupancy the warp round trip alone costs more than one push changes. | High |
+| Q8 | What actually blocks the method here? | **Linearity.** Per-push displacement is 84% predictable from grid-visible features but only 58% linearly — linearity forfeits ~31% of the achievable signal (§2.3). The resampling issue is real but secondary, and fixed by a σ≈1 blur. | High |
 
 ---
 
@@ -157,6 +157,197 @@ Caveat: 80 samples per quartile from 3 held-out runs, single push length. The
 trend is monotone across all four quartiles and the Q4 margin is large
 (+0.18 vs −0.02), but this wants confirming on the full 2 560 and at a second
 push length before being leaned on.
+
+## 2.2 Per-bin (switched) operators, and four corrections to §2/§2.1
+
+Tested the proposal of splitting the data by how much the sweep moves material
+and fitting a separate operator per bin, with the bin selected at inference by
+the **contact score** — pile mass lying in the blade's path, computable from
+`(I_k, u)` alone, so it is a legitimate switching variable rather than oracle
+information (`contact_score` in `fit_linear_foresight.py`).
+
+Four things had to be fixed before the comparison meant anything. Each of them
+invalidates numbers reported earlier in this document.
+
+**(a) The non-negative fit was under-converged — a bug.** It used projected
+gradient from `A = 0` with 300 iterations; the relative residual was still
+falling at 20 000 (0.4766 → 0.4602 → 0.4558). Starting from zero, under-
+convergence biases the operator toward predicting *less* mass than the truth,
+which looks exactly like a model that erases the pile — and matches the symptom
+in §2 (`L1/mass` 0.56 vs persistence 0.45, soft IoU 0.58 vs 0.69). Replaced with
+FISTA at 4000 iterations plus a convergence trace; it now plateaus by iteration
+1000. **Every `linear-nonneg` number in §2 and §2.1 is pessimistic.**
+
+**(b) Single-split comparisons here are below the noise floor.** The holdout was
+unseeded, so each invocation drew a different test set. With 8 data files the
+holdout is one file (320 samples) and the fold-to-fold std of rms is ~0.004 —
+several times the ~0.001 effects being compared. Demonstrated by a gating
+variant that "beat" persistence by +0.00103 on seed 0 and then won only 3 of 6
+seeds (mean −0.00043 ± 0.00378): **that win was noise.** The same applies to a
+crop=0.5 result that briefly appeared to beat persistence and did not survive
+seeding. Comparisons are now paired leave-one-run-out CV (`loro_foresight.py`).
+
+**(c) Ridge is producing a non-physical operator when `M < D`.** At M/D = 0.83,
+`ridge 1e-2` reaches the *best training* residual (0.217 vs 0.456 for
+non-negative) with `‖A−I‖/‖I‖ = 8.2` and column sums `0.94 ± 30` — enormous
+cancelling entries, i.e. interpolation. Non-negativity keeps the operator near a
+transport map (`‖A−I‖/‖I‖ = 0.48`, column sums `0.95 ± 0.29`). This is the
+mechanism behind their Fig. 7 result, visible directly in the operator.
+
+**(d) The "barely" bin is not a no-op bin.** Mean canonical-frame change per bin
+is 2.55 / 3.77 / 4.93 — the lowest bin still moves material appreciably. So
+"the barely-bin operator should collapse to the identity" is not the right
+expectation; what is checkable is that it must beat identity, and it does
+(training residual 0.456 vs 0.518). The switching variable is a *movement
+magnitude* discriminator, not a contact/no-contact one.
+
+### The switching variable has a ceiling
+
+Four candidate inference-time predictors of how much a push actually moves
+material (‖I₁−I₀‖ in the swept band), n = 2560:
+
+| predictor | Pearson | Spearman |
+|---|---|---|
+| pile mass in blade path | 0.457 | 0.466 |
+| pile mass, narrow path | 0.458 | 0.470 |
+| occupied area in path | 0.457 | 0.466 |
+| mass in path × travel | 0.457 | 0.466 |
+| geometric `cumulative` model's own predicted change | 0.425 | 0.448 |
+
+All land at 0.44–0.47, including using a full geometric push model as the
+predictor. That consistency across quite different estimators suggests a
+**ceiling on how predictable movement magnitude is from a top-down occupancy
+image plus the action** — the residual variance lives in particle-level
+configuration (stacking, interlocking, contact with walls) that the occupancy
+grid does not represent. Consequence for the switched model: the bins can only
+ever be weakly differentiated, so per-bin specialisation has to pay for
+splitting the data three ways out of a ~47%-informative signal.
+
+Terciles do separate in the mean (actual movement 3.90 / 5.90 / 7.56) but
+overlap heavily (bin 3 spans 1.73–11.45 at p10–p90).
+
+## 2.3 Why the operator underperforms: it is a linearity limit, not a data,
+## representation, or physics limit
+
+Three hypotheses I advanced earlier for the operator's weak performance were
+each tested and each **refuted**. What survives is a clean quantitative answer.
+
+### Grounding the numbers first
+
+All the rms differences reported above are occupancy-per-pixel, which is
+uninterpretable on its own and made real effects look like rounding. Restated as
+a share of the change that actually occurred (100% = no better than predicting
+nothing moved), 8-fold LORO, native 64 / crop 0.5 / blur 1.0:
+
+| model | error as % of the real change | COM error | as % of true COM shift | mass error |
+|---|---|---|---|---|
+| persistence (do nothing) | 100.0% | 5.35 mm | 100.0% | 1.25 cubes |
+| identity (warp only) | 99.9% | 5.38 mm | 100.6% | 1.23 cubes |
+| linear operator | **99.2%** | 5.62 mm | 105.1% | 1.21 cubes |
+| heuristic cumulative | 112.9% | 5.40 mm | 100.9% | 1.21 cubes |
+
+Stratified by how much pile is in the blade's path, the operator's error is
+105.2% / 96.3% / 96.9% / 107.4% of the change (bottom-50 / 50-80 / 80-95 / top-5
+percentiles of contact). **So the operator's best case is a 3-4% error
+reduction, and it is worse than doing nothing at both extremes.** Every
+comparison in §2-§2.2 -- crop, FISTA, shrinkage, switching, gating -- lives
+inside a 96-113% band around "explains nothing", and should not have been
+interpreted as it was.
+
+Calibration: 2.0 mm/px, ~9.8 px per cube.
+
+### Refuted hypothesis 1: the plate is skimming over the pile
+
+Checked directly against the recorded 3-D state (`p_starts` carries z;
+`states`/`states_` carry full particle positions):
+
+| quantity | value |
+|---|---|
+| plate bottom | z = 12.50 mm |
+| cube centre / top | 12.50 / 15.00 mm |
+| vertical overlap | **+2.49 mm, engaging 100% of cubes** |
+| particle displacement in the swept band | **mean 18.9 mm, median 16.4 mm, p95 41.9 mm** |
+| band particles moving > 10 mm | 66% |
+| vertical displacement | +0.01 mm (they slide, not tip) |
+
+A 40 mm push moves the cubes in its path ~19 mm. **The manipulation works.**
+(Incidental: the plate bottom sits at cube *centre* height, so it engages only
+the top half of each 5 mm cube. Effective, but possibly not intended.)
+
+The 5.35 mm "COM shift" in the table above is an artefact of the metric, not the
+physics: it is the COM of occupancy *inside the band mask*, and material pushed
+forward largely stays inside that mask, so it understates the true motion ~4x.
+
+### Refuted hypothesis 2: binary occupancy destroys height information
+
+**The pile is a single layer -- 100% of particles in layer 0, zero stacking.**
+There is no height information for the clamp in `particles_to_occupancy` to
+destroy. The recommendation to un-clamp the rasteriser is withdrawn; it rested
+on inferring stacking from occupancy mass (492 px for 50 cubes vs ~245
+predicted), whose real cause is footprint splatting inflating each cube to
+~9.8 px.
+
+### Refuted hypothesis 3: displacement is irreducibly stochastic
+
+The 0.47 Spearman ceiling in §2.2 was a property of one hand-crafted scalar, not
+of the representation. With a proper feature set (mass profile along the push
+axis in 2 mm bins, lateral profile, wall distances, mass ahead of the blade) and
+a nonlinear regressor, per-push displacement is highly predictable.
+`variance_decomposition.py`, 5-fold grouped CV by run, n=7680:
+
+| feature set | linear R² | boosted R² |
+|---|---|---|
+| noise control | −0.000 | −0.053 |
+| **OCC (grid-visible only)** | **0.576** | **0.836** |
+| OCC + exact particle positions | 0.718 | 0.877 |
+| OCC + positions + cube yaw | 0.718 | 0.876 |
+
+Displacement is **84% predictable from what the occupancy grid already
+contains**. Exact sub-pixel positions and packing add only +0.04; cube
+orientation adds nothing. The representation is adequate.
+
+### What actually limits it: 26 points of R² reachable only nonlinearly
+
+The gap is linear-vs-nonlinear: **0.576 → 0.836**. `nonlinearity_probe.py`
+characterises it:
+
+| construction | R² |
+|---|---|
+| linear on raw OCC features | 0.576 |
+| + linear on log1p(target) (saturation) | −0.476 |
+| + cumulative mass profile ("snow-plough") | 0.576 |
+| + quadratic in the top-8 OCC dims | **0.727** |
+| + 1000 random Fourier features | 0.734 |
+| boosted trees (the target) | **0.836** |
+
+So the nonlinearity decomposes roughly as:
+
+- **+0.15 quadratic / multiplicative** — recovered by pairwise products alone,
+  and matched (0.734) by generic smooth features, so this part is low-order
+  rather than specifically physical.
+- **+0.11 threshold-like** — captured by trees but not by quadratic or smooth
+  random features. Physically sensible: whether a given cube is swept is a
+  *contact decision*, sharply nonlinear in whether the blade path intersects it.
+
+Two negative controls worth recording: a saturating target transform actively
+hurts (−0.476), and the cumulative-profile test is **vacuous** — a cumulative
+sum is a linear map of the profile, so a linear model already has access to it.
+That test measured nothing and its 0.576 should not be read as evidence against
+the snow-plough picture.
+
+### Consequence
+
+**The paper's central claim — that a linear model suffices for this task — fails
+here, and the cost is now quantified: linearity forfeits ~31% of the achievable
+signal** (0.576 of 0.836 R²). That is a legitimate and specific comparison
+result rather than an implementation shortfall, and it is the opposite of their
+finding in a 2-D setting with larger, smoother objects.
+
+It also gives the repo's learned models a concrete target: **R² 0.84 on per-push
+band displacement**, with the knowledge that ~60% of the nonlinear headroom is
+low-order (so a quadratic/bilinear operator should capture it — the "bilinear
+rung" of `analytic_descriptors_latent_space_plan_v2.md` §3) and ~40% is
+threshold-like (needing genuine nonlinearity).
 
 ## 3. Q1 in full: the 5th DOF was never in play
 

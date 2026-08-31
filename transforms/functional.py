@@ -323,7 +323,8 @@ def _to_normalized(px: torch.Tensor, n: int) -> torch.Tensor:
 
 
 def push_frame_transform(start_px: torch.Tensor, end_px: torch.Tensor,
-                         grid_res: Tuple[int, int]) -> torch.Tensor:
+                         grid_res: Tuple[int, int],
+                         scale: float = 1.0) -> torch.Tensor:
     """SE(2) transform taking the canonical push frame to image coordinates.
 
     Returns ``(B, 2, 3)`` suitable for ``torch.nn.functional.affine_grid``,
@@ -336,6 +337,14 @@ def push_frame_transform(start_px: torch.Tensor, end_px: torch.Tensor,
     ----------
     start_px, end_px : (B, 2) push endpoints in pixels, (col, row) order.
     grid_res         : (H, W), must be square.
+    scale            : fraction of the image the canonical window spans.
+                       1.0 warps the whole image (what the paper does).
+                       Smaller CROPS to a window around the push, which is
+                       usually what you want: the push only affects a
+                       neighbourhood of itself, so a full-image operator spends
+                       almost all of its parameters modelling the identity.
+                       Cropping shrinks the operator by 1/scale**4 and is what
+                       makes a well-determined fit possible from modest data.
     """
     H, W = int(grid_res[0]), int(grid_res[1])
     if H != W:
@@ -349,18 +358,24 @@ def push_frame_transform(start_px: torch.Tensor, end_px: torch.Tensor,
     mx = _to_normalized(mid[:, 0], W)
     my = _to_normalized(mid[:, 1], H)
 
+    f = float(scale)
     theta = torch.stack([
-        torch.stack([cos, -sin, mx], dim=-1),
-        torch.stack([sin,  cos, my], dim=-1),
+        torch.stack([f * cos, -f * sin, mx], dim=-1),
+        torch.stack([f * sin,  f * cos, my], dim=-1),
     ], dim=-2)                                            # (B, 2, 3)
     return theta
 
 
 def invert_affine(theta: torch.Tensor) -> torch.Tensor:
-    """Inverse of a ``(B, 2, 3)`` rigid transform: [R|t] -> [R^T | -R^T t]."""
+    """Inverse of a ``(B, 2, 3)`` affine transform: [R|t] -> [R^-1 | -R^-1 t].
+
+    A true inverse rather than the transpose shortcut, because
+    `push_frame_transform(scale=...)` makes R a scaled rotation, for which
+    R^-1 != R^T.
+    """
     R, t = theta[:, :, :2], theta[:, :, 2:]
-    Rt = R.transpose(-1, -2)
-    return torch.cat([Rt, -Rt @ t], dim=-1)
+    Ri = torch.linalg.inv(R)
+    return torch.cat([Ri, -Ri @ t], dim=-1)
 
 
 def warp_affine_occ(occ: torch.Tensor, theta: torch.Tensor,
@@ -383,24 +398,26 @@ def warp_affine_occ(occ: torch.Tensor, theta: torch.Tensor,
 
 def to_push_frame(occ: torch.Tensor, start_px: torch.Tensor,
                   end_px: torch.Tensor,
-                  out_res: Optional[Tuple[int, int]] = None) -> torch.Tensor:
+                  out_res: Optional[Tuple[int, int]] = None,
+                  scale: float = 1.0) -> torch.Tensor:
     """Warp occupancy into the canonical push frame (their ``T(I)``)."""
-    theta = push_frame_transform(start_px, end_px, occ.shape[-2:])
+    theta = push_frame_transform(start_px, end_px, occ.shape[-2:], scale)
     return warp_affine_occ(occ, theta, out_res)
 
 
 def from_push_frame(occ_canon: torch.Tensor, start_px: torch.Tensor,
                     end_px: torch.Tensor,
-                    out_res: Tuple[int, int]) -> torch.Tensor:
+                    out_res: Tuple[int, int],
+                    scale: float = 1.0) -> torch.Tensor:
     """Warp a canonical-frame image back to image coordinates (``T^-1``)."""
-    theta = push_frame_transform(start_px, end_px, out_res)
+    theta = push_frame_transform(start_px, end_px, out_res, scale)
     return warp_affine_occ(occ_canon, invert_affine(theta), out_res)
 
 
 def push_frame_validity_mask(start_px: torch.Tensor, end_px: torch.Tensor,
                              grid_res: Tuple[int, int],
-                             canon_res: Optional[Tuple[int, int]] = None
-                             ) -> torch.Tensor:
+                             canon_res: Optional[Tuple[int, int]] = None,
+                             scale: float = 1.0) -> torch.Tensor:
     """Their ``M = T^-1(T(1))`` — where a round trip preserves information.
 
     Rotating a square image inside a same-sized square loses the corners, so
@@ -410,8 +427,8 @@ def push_frame_validity_mask(start_px: torch.Tensor, end_px: torch.Tensor,
     B = start_px.shape[0]
     H, W = int(grid_res[0]), int(grid_res[1])
     ones = torch.ones((B, H, W), dtype=start_px.dtype, device=start_px.device)
-    canon = to_push_frame(ones, start_px, end_px, canon_res)
-    return from_push_frame(canon, start_px, end_px, (H, W))
+    canon = to_push_frame(ones, start_px, end_px, canon_res, scale)
+    return from_push_frame(canon, start_px, end_px, (H, W), scale)
 
 
 def blend_push_prediction(pred: torch.Tensor, occ: torch.Tensor,
