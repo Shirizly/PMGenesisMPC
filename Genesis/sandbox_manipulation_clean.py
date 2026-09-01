@@ -431,6 +431,7 @@ class SandboxManipulation:
         _spawn = self._config.get("spawn", {}) or {}
         self._pile_extent = _spawn.get("pile_extent", None)
         self._pile_layers = _spawn.get("pile_layers", None)
+        self._spawn_mode = str(_spawn.get("mode", "drop")).lower()
         if self._pile_extent is not None:
             self._pile_extent = float(self._pile_extent)
         if self._pile_layers is not None:
@@ -746,7 +747,8 @@ class SandboxManipulation:
         self._n_active = n
 
     def shuffle_particles(self, pile_extent: float | None = None,
-                          pile_layers: int | None = None):
+                          pile_layers: int | None = None,
+                          spawn_mode: str | None = None):
         # Safety net: flush any transitions recorded since the last shuffle
         # (i.e. the episode that's about to be overwritten) before wiping
         # particle state for a new configuration, so buffered data is never
@@ -773,6 +775,15 @@ class SandboxManipulation:
             pile_extent = self._pile_extent
         if pile_layers is None:
             pile_layers = self._pile_layers
+
+        if spawn_mode is None:
+            spawn_mode = self._spawn_mode
+        if spawn_mode == "pyramid":
+            self._spawn_pyramid()
+            return
+        elif spawn_mode != "drop":
+            raise ValueError(
+                f"spawn_mode must be 'drop' or 'pyramid', got {spawn_mode!r}")
 
         # Number of stacked layers to spread the particles over on respawn.
         # 1 reproduces the original single-layer behaviour exactly and is
@@ -1920,6 +1931,71 @@ class SandboxManipulation:
         return action_starts, torch.cat((starts_xy + u_dir * L,
                                         action_starts[..., 2:]), dim=-1)
 
+    def _spawn_pyramid(self):
+        """Place the particles as a stepped pyramid instead of dropping them.
+
+        The dropped spawn cannot make a pile more than one layer deep -- the
+        cubes bounce outward on landing (measured: 90-94% in layer 0 across two
+        particle sizes, and raising friction makes it slightly *worse*). A
+        pyramid starts at rest under gravity, so there is no bounce energy to
+        spread with; measured at 50 cubes it holds a mean layer index of 0.68
+        against 0.05-0.09 for the drop, does not move at all when settled, and
+        keeps its layering through a push. See Genesis/spawn_geometry.py.
+
+        Every env gets the same layout apart from an 8% jitter -- a perfectly
+        symmetric pyramid can sit in unstable equilibrium and then topple all at
+        once, which is not a pile, and the jitter also stops the parallel envs
+        being exact duplicates.
+        """
+        from .spawn_geometry import pyramid_positions
+
+        self.flush_transitions()
+        self.set_transition_context(None)
+
+        n_particles = len(self.material)
+        if n_particles == 0:
+            return
+        n_active = getattr(self, "_n_active", n_particles)
+        size = float(self._material_params.get("particle_size") or 0.005)
+        floor_z = float(self._wall_thickness) / 2.0
+
+        pos, n_layers = pyramid_positions(n_active, size, floor_z=floor_z,
+                                          device=gs.device)
+        positions = torch.zeros((self._n_envs, n_particles, 3), device=gs.device)
+        positions[:, :n_active] = pos.unsqueeze(0)
+        positions[:, :n_active, :2] += (
+            torch.rand((self._n_envs, n_active, 2), device=gs.device) - 0.5
+        ) * size * 0.08
+
+        if n_active < n_particles:
+            # Same parking grid the dropped spawn uses -- never at z=0, which is
+            # below the floor and gets the cubes ejected.
+            n_parked = n_particles - n_active
+            park = torch.tensor(self._park_pos, dtype=torch.float32, device=gs.device)
+            pitch = size * 1.5
+            cols = int(math.ceil(math.sqrt(n_parked)))
+            idx = torch.arange(n_parked, device=gs.device)
+            offsets = torch.zeros((n_parked, 3), device=gs.device)
+            offsets[:, 0] = (idx % cols).to(torch.float32) * pitch
+            offsets[:, 1] = torch.div(idx, cols, rounding_mode="floor").to(torch.float32) * pitch
+            positions[:, n_active:, :] = (park.view(1, 3) + offsets).unsqueeze(0).expand(
+                self._n_envs, n_parked, 3)
+
+        # Axis-aligned, NOT the random yaw the dropped spawn uses: a pyramid only
+        # stacks if the cubes are square to each other.
+        quats = torch.zeros((self._n_envs, n_particles, 4), device=gs.device)
+        quats[..., 0] = 1.0
+
+        self._log(f"pyramid spawn: {n_active} particles, {n_layers} layer(s), "
+                  f"base pitch {1000 * size * 1.15:.1f} mm")
+        self._write_particle_poses(
+            positions, quats, torch.arange(self._n_envs, device=gs.device))
+        if self._particle_dofs_idx.numel() > 0:
+            self._scene.rigid_solver.set_dofs_velocity(
+                torch.zeros((self._n_envs, self._particle_dofs_idx.numel()),
+                            device=gs.device),
+                dofs_idx=self._particle_dofs_idx, skip_forward=True)
+
     def _apply_pile_aware_starts(self, n_samples, tool_length, tool_width,
                                  clearance=None, min_swath=3):
         """Draw blade poses that begin in contact with the pile.
@@ -2303,6 +2379,7 @@ class SandboxManipulation:
             "pile_aware": bool(pile_aware),
             "pile_clearance": (None if pile_clearance is None else float(pile_clearance)),
             "min_swath_particles": int(min_swath_particles),
+            "spawn_mode": self._spawn_mode,
             "spawn_pile_extent": self._pile_extent,
             "spawn_pile_layers": self._pile_layers,
         })

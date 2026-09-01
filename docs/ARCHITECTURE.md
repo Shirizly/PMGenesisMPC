@@ -200,6 +200,16 @@ Genesis/
                         the blind draw per sample when the free set is empty.
                         Genesis-free (torch/numpy/scipy), unit-tested in
                         tests/test_placement_sampling.py.
+  spawn_geometry.py      stepped-pyramid particle spawn layouts
+                        (pyramid_layer_plan / pyramid_positions), pure torch,
+                        unit-tested in tests/test_spawn_geometry.py. The only
+                        mechanism found that yields a pile more than one layer
+                        deep: the dropped spawn leaves 90-94% of particles in
+                        layer 0 whatever the extent or friction, because cubes
+                        bounce outward on landing. Reached via
+                        shuffle_particles(spawn_mode="pyramid") or
+                        --spawn-mode pyramid; see
+                        docs/linear_foresight_findings.md section 5.
   action_sampling.py     batch-aware action shaping AND action-space
                         restriction, both pure torch (no `import genesis`),
                         unit-tested in tests/test_action_sampling.py.

@@ -93,6 +93,39 @@ in separate `--output-root` trees (as
 
 ---
 
+## 1.5 `--spawn-mode pyramid` — when you need actual DEPTH
+
+The dropped spawn in §1 makes a **dense monolayer**, not a deep pile, and no
+amount of `--pile-extent` or friction changes that (measured: 90% of particles in
+layer 0 at 30x5 mm, 94% at 80x3 mm, and raising friction 0.3 -> 0.9 makes it
+*slightly flatter*). Cubes released above the floor bounce outward before they
+rest.
+
+`--spawn-mode pyramid` places them as a stepped pyramid instead. Every cube rests
+on the one below, so the structure starts at rest under gravity with no bounce
+energy to spread with. Measured at 50 cubes of 5 mm (mean layer index,
+mass-weighted, 0 = flat):
+
+| condition | mean layer | z span | footprint |
+|---|---|---|---|
+| dropped | 0.05-0.09 | 5.0 mm | 65-67 mm |
+| pyramid, as placed | 0.68 | 10.0 mm | 23.3 mm |
+| pyramid, after settling | 0.68 | 10.0 mm | 23.3 mm |
+| pyramid + 1 push | 0.67-0.68 | 10.0 mm | 38-48 mm |
+
+"As placed" and "after settling" are identical — nothing moves. It also keeps its
+layering through a push.
+
+Notes:
+- Ignores `--pile-extent` / `--pile-layers`, which only shape the drop.
+- Uses axis-aligned cube orientations, not the random yaw the drop uses: a
+  pyramid only stacks if the cubes are square to each other.
+- Adds an 8% xy jitter, so a perfectly symmetric (unstably balanced) pyramid does
+  not topple all at once, and so parallel envs are not exact duplicates. They are
+  still far less diverse than dropped spawns — a state library built from
+  pyramids needs more settles, or a randomised base offset.
+- Geometry and the layer-count arithmetic: `Genesis/spawn_geometry.py`.
+
 ## 2. Pile-aware action sampling
 
 ### What changed

@@ -100,8 +100,9 @@ scripts are unaffected. 169 tests pass, none require a GPU.
 |---|---|
 | `transforms/functional.py` | The SE(2) push-frame warp the method requires: `push_frame_transform`, `to_push_frame`, `from_push_frame`, `push_frame_validity_mask`, `blend_push_prediction`, `invert_affine`. Supports a `scale` argument that **crops** the canonical window instead of warping the whole image. Verified mass-preserving. |
 | `Genesis/action_sampling.py` | Action-space geometry, pure torch, GPU-free tests. `blade_normal`, `sampling_box`, `constrain_push` (perpendicular / fixed-length), `relative_blade_angle`, `pile_contact_starts` (aim the blade at the pile), `ray_box_max_travel`. |
-| `Genesis/sandbox_manipulation_clean.py` | `shuffle_particles(pile_extent=, pile_layers=)` for compact multi-layer spawns; `generate_action_samples(perpendicular_pushes=, push_length=, pile_aware=, ...)`; per-step action redraw in pile-aware mode. |
-| `Genesis/data_collection_clean.py` | Flags: `--perpendicular-pushes`, `--push-length`, `--pile-extent`, `--pile-layers`, `--pile-aware-actions`, `--pile-clearance`, `--min-swath-particles`. All recorded in each batch's saved config. |
+| `Genesis/spawn_geometry.py` | **NEW.** `pyramid_layer_plan`, `pyramid_positions` — stepped-pyramid spawn layouts. Pure torch, GPU-free tests. The only mechanism found that produces a pile more than one layer deep. |
+| `Genesis/sandbox_manipulation_clean.py` | `shuffle_particles(pile_extent=, pile_layers=, spawn_mode=)` — `spawn_mode="pyramid"` places a stepped pyramid instead of dropping layers; `generate_action_samples(perpendicular_pushes=, push_length=, pile_aware=, ...)`; per-step action redraw in pile-aware mode. |
+| `Genesis/data_collection_clean.py` | Flags: `--perpendicular-pushes`, `--push-length`, `--pile-extent`, `--pile-layers`, **`--spawn-mode {drop,pyramid}`**, `--pile-aware-actions`, `--pile-clearance`, `--min-swath-particles`, `--max-collision-pairs`. All recorded in each batch's saved config. |
 
 ### 2.2 Analysis tools
 
@@ -412,12 +413,47 @@ come to rest, and smaller/lighter cubes bounce more, not less. So the
 `--pile-extent` mechanism reliably produces a *dense monolayer* and has now
 failed to produce a deep pile at two particle sizes.
 
-If depth is genuinely needed (it is the untested half of H1 and H2), the spawn
-mechanism itself has to change — spawn *into* a settled bed rather than dropping
-layers onto an empty tray, or use a physically smaller container so the material
-has nowhere to spread. Simply asking for more layers does not work.
-
 The engagement side did improve: the blade swath now holds 87% of the pile.
+
+### Depth: SOLVED by placing the pile instead of dropping it — `--spawn-mode pyramid`
+
+Two cheap ideas were probed at 50 cubes of 5 mm
+(`scripts/probe_pile_depth.py`). Mean layer index is mass-weighted: 0.0 = flat
+monolayer, 1.0 = two full layers.
+
+| condition | friction 0.3 | friction 0.9 | z span | footprint |
+|---|---|---|---|---|
+| dropped (control) | 0.09 | **0.05** | 5.0 mm | 65–67 mm |
+| pyramid, as placed | 0.68 | 0.68 | 10.0 mm | 23.3 mm |
+| pyramid, after settling | **0.68** | **0.68** | 10.0 mm | 23.3 mm |
+| pyramid + 1 push | 0.67 | **0.68** | 10.0 mm | 38–48 mm |
+
+**Friction does not help.** Raising it from 0.3 to 0.9 made the dropped pile
+*slightly flatter* (0.09 → 0.05). Gripping is not the mechanism — the cubes
+spread during the drop, not by sliding apart afterwards. That lever is dead.
+
+**Placement works, and is stable.** The pyramid is ~7× deeper than the drop by
+mean layer, in a third of the footprint. "As placed" and "after settling" are
+byte-identical (0.68 → 0.68, footprint 23.3 → 23.3): the structure is genuinely
+at rest under gravity, so there is no bounce energy to spread with — which was
+the hypothesis. It also **survives a push with its layering intact** (0.68 →
+0.67/0.68); the footprint grows as material spreads sideways, and higher friction
+halves that spread (48 → 38 mm).
+
+**50 cubes is enough.** It supports a 4-layer pyramid using all 50 cubes.
+
+Shipped as `--spawn-mode pyramid` (or `spawn: {mode: pyramid}` in a config), with
+the geometry in `Genesis/spawn_geometry.py` and 9 GPU-free tests. It ignores
+`--pile-extent` / `--pile-layers`, which only shape the drop.
+
+**Two caveats before relying on it.** The 0.68 figures were measured with a
+`[25, 16, 9]` layout for n=50; the layout was then changed to `[36, 9, 4, 1]` to
+fix a layer-count non-monotonicity (5 layers at n=55 collapsing to 2 at n=56).
+The new layout is one layer *deeper*, so it should be at least as good, but it
+has **not been re-measured** — re-run the probe to confirm. And the pyramid gives
+every env the same layout up to an 8% jitter, so it is far less diverse than the
+dropped spawn; a state library built from it will need more settles, or a
+randomised base offset, to avoid near-duplicate starts.
 
 ### The contact budget was over-provisioned, and that caused the OOM
 
@@ -499,8 +535,35 @@ or a smaller container. This is why H1 and H2 need the same experiment.
 
 ## 7. Recommended next steps
 
-1. **H1 (continuum limit) — attempted overnight, blocked by GPU memory. Still the
-   most valuable experiment.** The 150 × 3 mm geometry itself is *validated*: the
+1. **H1/H2 via the pyramid spawn — now the cheapest path, and newly unblocked.**
+   `--spawn-mode pyramid` gives a genuinely 3–4 layer pile at **50 cubes**, which
+   runs fast, instead of the 150-cube dense pile that OOM'd. That makes both open
+   hypotheses testable at a tractable particle count:
+   - **H2 (2-D vs 3-D)** directly: compare the linear share on pyramid-spawned
+     multi-layer data against the single-layer scattered data. This is the first
+     time real depth has been available, so it is a clean test.
+   - **H1 (continuum limit)** partially: 50 cubes is not a continuum, but pyramid
+     spawning removes the depth confound, so what remains is purely a
+     particle-count effect.
+
+   Suggested first run (~1 h, not overnight):
+   ```bash
+   python -m Genesis.data_collection_clean --num-particles 50 \
+       --particle-sizes 0.005 --particle-shape cube --n-envs 32 \
+       --samples-per-env 2 --n-batches 30 --state-library 4 \
+       --state-library-damping 15.0 --constant-params \
+       --spawn-mode pyramid --pile-aware-actions --push-length 0.02 \
+       --output-root data/foresight/pyramid50
+   ```
+   then `variance_decomposition.py --glob '...pyramid50/.../_*_data.pt'`. Compare
+   the linear share against 90% (scattered + contact-aware) and 92% (dense
+   monolayer + contact-aware). **If depth does not move it, H2 is refuted and the
+   remaining candidate is particle count alone.**
+
+   Re-measure the pyramid's own depth first (§5) — the layout changed after the
+   0.68 figure was taken.
+
+2. **H1 at high particle count — attempted overnight, blocked by GPU memory.** The 150 × 3 mm geometry itself is *validated*: the
    spawn produced a 4-layer, 46 mm-square pile that settled in 10 steps with
    damping. But the run died with `CUDA_ERROR_OUT_OF_MEMORY` at 8 envs, and the
    4-env probe was too slow to finish a single 2-push batch in 20 minutes
@@ -515,19 +578,19 @@ or a smaller container. This is why H1 and H2 need the same experiment.
 
    Recommended: re-run the probe at 80 particles / 4 envs / `mcp` 400 and read
    `contact_budget_usage()` before committing a night to it.
-2. ~~Isolate sampling from piling~~ — **done** (§3.4.1). Contact-aware sampling on
+3. ~~Isolate sampling from piling~~ — **done** (§3.4.1). Contact-aware sampling on
    scattered geometry reaches 90%, so the sampling protocol is confirmed as the
    cause. No further work needed here.
-3. **Move the working model to the descriptor level.** `dmdc_baseline.py` already
+4. **Move the working model to the descriptor level.** `dmdc_baseline.py` already
    fits per-action linear maps over ~50 analytic descriptors — well-determined at
    current data volumes, unlike a million-parameter pixel operator. Two additions:
    switch the operator on **contact amount** (§3.3), and express the Lyapunov cost
    as a linear functional in the descriptor basis (idea I1 in `ideas_log.md`), so
    MPC never reconstructs a grid.
-4. **Then build the closed-loop controller** and score it on the Lyapunov descent
+5. **Then build the closed-loop controller** and score it on the Lyapunov descent
    curve — the paper's actual metric. Do not score it on one-step image error.
-5. **Test H4 cheaply** with `--particle-shape sphere`.
-6. Resolve trap 7 (the `INTERFACES.md` convention) and trap 8 (the `PART`
+6. **Test H4 cheaply** with `--particle-shape sphere`.
+7. Resolve trap 7 (the `INTERFACES.md` convention) and trap 8 (the `PART`
    sentinels).
 
 ---
@@ -551,4 +614,10 @@ python -m Genesis.run_collection --plan configs/collection_pile30.yaml
 
 # Piled analysis once >= 6 files exist
 python run_pile_analysis.py
+
+# Pile DEPTH: pyramid spawn vs dropped spawn, and the friction lever (~5 min)
+python scripts/probe_pile_depth.py --counts 50 --frictions 0.3 0.9 --envs 2
+
+# Size a dense-pile run before committing to it (contact budget + throughput)
+python scripts/probe_dense_pile.py --n 80 --size 0.003 --envs 8 --mcp 200
 ```

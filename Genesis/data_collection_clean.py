@@ -153,6 +153,19 @@ def parse_args():
              "--pile-extent and the particle count). Layers are dropped, not "
              "interpenetrating; the settle collapses them into a natural pile.")
     parser.add_argument(
+        "--spawn-mode", choices=["drop", "pyramid"], default=None,
+        help="how the particles are placed on respawn. 'drop' (default) is the "
+             "historical rejection-sampled, optionally-layered spawn, which "
+             "reliably yields a dense MONOLAYER -- measured 90-94%% of particles "
+             "in layer 0 across two particle sizes, and raising friction makes "
+             "it slightly flatter, because the cubes bounce outward on landing. "
+             "'pyramid' places them as a stepped pyramid that is already at rest "
+             "under gravity: measured at 50 cubes it holds a mean layer index of "
+             "0.68 vs 0.05-0.09 for the drop, in a third of the footprint, does "
+             "not relax when settled, and keeps its layering through a push. Use "
+             "it when pile DEPTH matters (see docs/linear_foresight_findings.md). "
+             "Ignores --pile-extent/--pile-layers, which only shape the drop.")
+    parser.add_argument(
         "--pile-aware-actions", action="store_true",
         help="start every push in contact with the pile and sweep through it: "
              "the blade is placed one particle-width from the pile's near face "
@@ -282,8 +295,11 @@ def main():
                     config["rigid_options"]["max_collision_pairs"] = \
                         args.max_collision_pairs
 
-                if args.pile_extent is not None or args.pile_layers is not None:
+                if (args.pile_extent is not None or args.pile_layers is not None
+                        or args.spawn_mode is not None):
                     config.setdefault("spawn", {})
+                    if args.spawn_mode is not None:
+                        config["spawn"]["mode"] = args.spawn_mode
                     if args.pile_extent is not None:
                         config["spawn"]["pile_extent"] = args.pile_extent
                     if args.pile_layers is not None:
