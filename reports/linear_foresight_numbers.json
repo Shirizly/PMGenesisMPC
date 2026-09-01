@@ -2,7 +2,7 @@
   "_readme": "Machine-readable results for the linear-visual-foresight investigation. Human-readable narrative and caveats: docs/linear_foresight_findings.md. Where this file and reports/linear_foresight_report.md disagree, this file and the findings doc win (the report is a chronological log containing superseded numbers).",
   "branch": "VisualForesight",
   "paper": "arXiv:2002.09093 (Suh & Tedrake 2020)",
-  "updated": "2026-08-31",
+  "updated": "2026-09-01",
   "datasets": {
     "scattered_L040": {
       "config": "configs/dataset/genesis_foresight_L040_full.yaml",
@@ -35,6 +35,27 @@
         "sd": 6.12
       },
       "known_contamination": "collected before the start-clamp fix: ~36% of blade starts outside the workspace box, ~3.3% of pushes travelled ~0mm. Biases AGAINST the linear result, so findings are conservative."
+    },
+    "scatter_contact_ATTRIBUTION_CONTROL": {
+      "config": "configs/dataset/genesis_foresight_scatter_contact.yaml",
+      "n_transitions": 2560,
+      "n_files": 40,
+      "n_particles": 50,
+      "spawn": "blind RSA over whole tray (SCATTERED)",
+      "actions": "pile-aware contact-sampled, perpendicular, 20mm",
+      "purpose": "the missing factorial cell: contact-aware sampling WITHOUT the pile"
+    },
+    "pile30_L020": {
+      "config": "configs/dataset/genesis_foresight_pile30_L020.yaml",
+      "n_transitions": 1408,
+      "n_files": 22,
+      "n_particles": 30,
+      "spawn": "pile_extent=0.015 centred",
+      "actions": "pile-aware, 20mm, WITH start-clamp fix",
+      "band_displacement_mm": {
+        "mean": 12.23,
+        "sd": 2.06
+      }
     }
   },
   "headline_variance_decomposition": {
@@ -60,6 +81,25 @@
       "linear": 0.856,
       "boosted": 0.908,
       "linear_share": 0.94
+    },
+    "scattered_CONTACT_sampled": {
+      "linear": 0.74,
+      "boosted": 0.823,
+      "linear_share": 0.9,
+      "n": 2560,
+      "_note": "THE ATTRIBUTION CONTROL. Scattered geometry + contact-aware sampling reaches the same share as piled, so the sampling protocol is the cause and the pile is not needed."
+    },
+    "scattered_contact_forward_disp": {
+      "linear": 0.721,
+      "boosted": 0.788,
+      "linear_share": 0.91
+    },
+    "piled_20mm_pushes": {
+      "linear": 0.55,
+      "boosted": 0.624,
+      "linear_share": 0.88,
+      "n": 1408,
+      "_note": "Lower ABSOLUTE R2 than the 40mm piled run (0.785) because displacement spread collapses (12.2+-2.1mm vs 23.4+-6.1mm). Shorter pushes cost signal without buying linearity."
     }
   },
   "the_key_finding_contact_stratification": {
@@ -168,6 +208,51 @@
         "linear": 0.687,
         "boosted": 0.801,
         "linear_share": 0.86
+      }
+    },
+    "_RELIABILITY_WARNING": "dV linear shares scatter 31-108% across datasets because the ABSOLUTE R2 is low; for a centred goal on piled 20mm data BOTH models score negative R2, and a ratio of two near-zero numbers is meaningless. Only the 'point' goal is consistently well predicted (linear R2 0.46-0.69). Use band displacement as the reliable target; treat dV shares as indicative only unless absolute R2 > ~0.4.",
+    "scattered_contact_n2560": {
+      "center": {
+        "linear": 0.256,
+        "boosted": 0.237,
+        "linear_share": 1.08
+      },
+      "corner": {
+        "linear": 0.24,
+        "boosted": 0.778,
+        "linear_share": 0.31
+      },
+      "stripe": {
+        "linear": 0.253,
+        "boosted": 0.636,
+        "linear_share": 0.4
+      },
+      "point": {
+        "linear": 0.596,
+        "boosted": 0.687,
+        "linear_share": 0.87
+      }
+    },
+    "piled_20mm_n1408": {
+      "center": {
+        "linear": -0.014,
+        "boosted": -0.38,
+        "linear_share": null
+      },
+      "corner": {
+        "linear": 0.279,
+        "boosted": 0.898,
+        "linear_share": 0.31
+      },
+      "stripe": {
+        "linear": 0.185,
+        "boosted": 0.47,
+        "linear_share": 0.39
+      },
+      "point": {
+        "linear": 0.463,
+        "boosted": 0.689,
+        "linear_share": 0.67
       }
     }
   },
@@ -306,15 +391,10 @@
   "next_experiments_ranked": [
     {
       "id": "H1",
-      "what": "100-150 particles, compact pile, contact-aware 20mm pushes; re-test the PIXEL operator",
+      "what": "re-probe at 80 particles / 4 envs / mcp 400, read contact_budget_usage(), then commit a night",
       "why": "decides whether the paper's per-pixel result is reproducible in 3-D at all. Continuum limit is the leading explanation for their success.",
-      "cost": "overnight"
-    },
-    {
-      "id": "attribution",
-      "what": "contact-aware sampling on SCATTERED geometry (--pile-aware-actions without --pile-extent)",
-      "why": "turns the inferential attribution of the headline result into a measured one",
-      "cost": "~15 min"
+      "cost": "overnight",
+      "status": "BLOCKED by GPU memory - see H1_continuum_limit_BLOCKED"
     },
     {
       "id": "descriptor_level",
@@ -375,5 +455,25 @@
       }
     }
   },
-  "unified_conclusion": "A model class that is ~90% linear on this task needs three ingredients: (1) the paper's SE(2) canonical push frame, which removes direction dependence; (2) the paper's switch on push length; (3) conditioning on CONTACT AMOUNT, which the paper got for free from its per-action collection protocol and which blind sampling destroys. Missing (3) cost 31% of the signal; missing direction-representation cost up to 46% on off-centre goals."
+  "unified_conclusion": "A model class that is ~90% linear on this task needs three ingredients: (1) the paper's SE(2) canonical push frame, which removes direction dependence; (2) the paper's switch on push length; (3) conditioning on CONTACT AMOUNT, which the paper got for free from its per-action collection protocol and which blind sampling destroys. Missing (3) cost 31% of the signal; missing direction-representation cost up to 46% on off-centre goals.",
+  "attribution_settled": {
+    "_conclusion": "MEASURED, not inferred. Changing only the SAMPLING recovers essentially the whole effect (69% -> 90%); changing only the GEOMETRY recovers none of it (density strata flat at 75-84%).",
+    "scattered_blind": 0.69,
+    "scattered_contact_aware": 0.9,
+    "piled_contact_aware": 0.92,
+    "piled_contact_aware_20mm": 0.88
+  },
+  "H1_continuum_limit_BLOCKED": {
+    "status": "attempted 2026-09-01, blocked by GPU memory",
+    "geometry_validated": true,
+    "geometry": "150 cubes of 3mm, density 4000, pile_extent auto-widened 0.021 -> 0.0228 (46mm square), 4 layers, settled in 10 steps with damping",
+    "failure": "CUDA_ERROR_OUT_OF_MEMORY at n_envs=8; the 4-env probe did not finish one 2-push batch in 20 min (~2.2 min/transition)",
+    "cause": "constraint Jacobian is O(max_collision_pairs x contacts x n_dofs x n_envs). 30->150 particles raises n_dofs 5x and the dense pile needs mcp 4x higher, so the envs that fit drop ~20x, to roughly 2.",
+    "options": [
+      "fewer particles (~80)",
+      "lower max_collision_pairs, but measure contact_budget_usage() first since overflow silently corrupts contacts",
+      "more VRAM"
+    ],
+    "recommended_next": "probe at 80 particles / 4 envs / mcp 400 and read contact_budget_usage() before committing a night"
+  }
 }

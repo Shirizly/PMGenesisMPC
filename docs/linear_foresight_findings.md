@@ -1,6 +1,6 @@
 # Linear Visual Foresight on Granular Piles — Findings and Handoff
 
-**Branch:** `VisualForesight` · **Last updated:** 2026-08-31
+**Branch:** `VisualForesight` · **Last updated:** 2026-09-01
 **Paper under test:** Suh & Tedrake 2020, *The Surprising Effectiveness of Linear
 Models for Visual Foresight in Object Pile Manipulation*, arXiv:2002.09093
 ([`docs/2002.09093v3.pdf`](2002.09093v3.pdf))
@@ -28,11 +28,13 @@ representation.**
 
 Seven findings, in order of confidence:
 
-1. **Blind action sampling was the problem.** Drawing push start points uniformly
-   over the tray produces pushes spanning a huge range of contact with the pile,
-   and *that variation is the nonlinearity*. Conditioned on contact amount, the
-   dynamics are essentially linear. The paper collected 1000 examples per
-   discretised action on purpose; our sampler did not.
+1. **Blind action sampling was the problem — now measured, not inferred.**
+   Drawing push start points uniformly over the tray produces pushes spanning a
+   huge range of contact with the pile, and *that variation is the
+   nonlinearity*. Conditioned on contact amount, the dynamics are essentially
+   linear. The paper collected 1000 examples per discretised action on purpose;
+   our sampler did not. **The overnight factorial control settles the
+   attribution** — see §3.4.1.
 
 2. **With contact-aware sampling, linear nearly closes the gap on displacement.**
    The share of predictable per-push displacement that a linear model captures
@@ -223,6 +225,56 @@ conditioning scattered data on contact already gave the same range (§3.3); pack
 density made no difference to the linear share; and the piled data reached only
 1.09 cube-width packing and 1.1 layers, inside the regime the density test covered.
 
+### 3.4.1 The attribution control (overnight, decisive)
+
+The headline result changed the pile *and* the sampling together. The missing
+factorial cell — contact-aware sampling on **ordinary scattered geometry** — was
+collected overnight (2560 transitions, 40 runs):
+
+| dataset | geometry | sampling | linear R² | boosted R² | **linear share** |
+|---|---|---|---|---|---|
+| `L040_full` | scattered | blind | 0.576 | 0.836 | **69%** |
+| **`scatter_contact`** | **scattered** | **contact-aware** | **0.740** | **0.823** | **90%** |
+| `pile30` | piled | contact-aware | 0.785 | 0.852 | 92% |
+| `pile30_L020` | piled | contact-aware, 20 mm | 0.550 | 0.624 | 88% |
+
+(mean band displacement; forward displacement gives 91% for the control.)
+
+**Scattered geometry with contact-aware pushes reaches 90% — indistinguishable
+from piled.** Changing only the sampling recovers essentially the whole effect;
+changing only the geometry (§2.5, §2.8) recovers none of it. The attribution
+stated in §3.4 is now measured rather than inferred.
+
+### 3.4.2 Push length changes the amount of signal, not the linearity
+
+The 20 mm piled dataset has a much lower *absolute* R² (0.550) than the 40 mm one
+(0.785) while its linear *share* is similar (88% vs 92%). The reason is visible in
+the spread: band displacement is 12.2 ± 2.1 mm at 20 mm against 23.4 ± 6.1 mm at
+40 mm. A shorter push produces a narrower, more homogeneous outcome, so there is
+proportionally less variance for *any* model to explain.
+
+Practical consequence: **shorter pushes do not buy linearity, and they cost
+signal.** Use 20 mm only where the geometry requires it (§5), not as a modelling
+choice.
+
+### 3.4.3 `dV` predictability is low and its shares are unstable
+
+Across all three datasets the `dV` linear shares scatter widely (31–108%) because
+the *absolute* R² is low — for a centred goal on the 20 mm piled data both models
+score **negative** R². A ratio of two near-zero numbers is not interpretable.
+
+| goal | scattered + contact | piled 20 mm | piled 40 mm |
+|---|---|---|---|
+| point | 0.596 → 87% | 0.463 → 67% | 0.687 → 86% |
+| centre | 0.256 → 108% | −0.014 → n/a | 0.486 → 68% |
+| corner | 0.240 → 31% | 0.279 → 31% | 0.404 → 44% |
+| stripe | 0.253 → 40% | 0.185 → 39% | 0.292 → 73% |
+
+Only the `point` goal is consistently well predicted. **Treat band displacement as
+the reliable target and `dV` shares as indicative only**, unless the absolute R²
+exceeds ~0.4. This supersedes the more confident `dV` framing earlier in this
+document.
+
 ### 3.5 What does not transfer
 
 A contact-switched *pixel* operator at `D = 256`, `M/D = 8.3`, properly determined,
@@ -410,13 +462,25 @@ or a smaller container. This is why H1 and H2 need the same experiment.
 
 ## 7. Recommended next steps
 
-1. **Run H1 (100–150 particles, compact pile, contact-aware 20 mm pushes) and
-   re-test the pixel operator.** This is the experiment that decides whether the
-   paper's per-pixel result is reproducible at all in 3-D. Overnight job.
-2. **Isolate sampling from piling** with one cheap control: contact-aware sampling
-   on *scattered* geometry (`--pile-aware-actions` without `--pile-extent`).
-   ~15 minutes, since scattered collection is ~100× cheaper. This turns §3.4's
-   inferential attribution into a measured one.
+1. **H1 (continuum limit) — attempted overnight, blocked by GPU memory. Still the
+   most valuable experiment.** The 150 × 3 mm geometry itself is *validated*: the
+   spawn produced a 4-layer, 46 mm-square pile that settled in 10 steps with
+   damping. But the run died with `CUDA_ERROR_OUT_OF_MEMORY` at 8 envs, and the
+   4-env probe was too slow to finish a single 2-push batch in 20 minutes
+   (≈2.2 min per transition). Genesis' constraint Jacobian is
+   `O(max_collision_pairs × contacts × n_dofs × n_envs)`, and going from 30 to
+   150 particles raises `n_dofs` 5× while the dense pile needs `mcp` 4× higher —
+   so the envs that fit drop ~20×, to roughly 2. Options, none free:
+   - **fewer particles** (~80) — keeps some continuum benefit at tolerable cost;
+   - **lower `--max-collision-pairs`** — but overflow silently corrupts contacts,
+     so this needs `contact_budget_usage()` measured first, not guessed;
+   - **more VRAM**, or 64-bit precision off the table for the same reason.
+
+   Recommended: re-run the probe at 80 particles / 4 envs / `mcp` 400 and read
+   `contact_budget_usage()` before committing a night to it.
+2. ~~Isolate sampling from piling~~ — **done** (§3.4.1). Contact-aware sampling on
+   scattered geometry reaches 90%, so the sampling protocol is confirmed as the
+   cause. No further work needed here.
 3. **Move the working model to the descriptor level.** `dmdc_baseline.py` already
    fits per-action linear maps over ~50 analytic descriptors — well-determined at
    current data volumes, unlike a million-parameter pixel operator. Two additions:
