@@ -392,6 +392,43 @@ image, not pixels per piece.
 
 ## 5. Practical constraints discovered
 
+### Smaller cubes do not buy pile depth either
+
+Probed directly (`scripts/probe_dense_pile.py`, 80 cubes of 3 mm, spawned as
+4 layers in a 32 mm square):
+
+| | 30 × 5 mm | **80 × 3 mm** |
+|---|---|---|
+| spawn footprint | 33 mm square, 3 layers | 32 mm square, 4 layers |
+| settled z span | 5.2 mm | **3.0 mm** |
+| layer occupancy | 90% / 10% | **94% / 6%** |
+| settled footprint | 57 mm | **62 mm** |
+| pile in blade swath | 67% | **87%** (69.8/80) |
+
+**Depth is still not achieved — 94% of particles end in a single layer, and the
+footprint spread to roughly twice the angle-of-repose prediction.** Dropping the
+spawn as 4 stacked layers means the cubes bounce and scatter outward before they
+come to rest, and smaller/lighter cubes bounce more, not less. So the
+`--pile-extent` mechanism reliably produces a *dense monolayer* and has now
+failed to produce a deep pile at two particle sizes.
+
+If depth is genuinely needed (it is the untested half of H1 and H2), the spawn
+mechanism itself has to change — spawn *into* a settled bed rather than dropping
+layers onto an empty tray, or use a physically smaller container so the material
+has nowhere to spread. Simply asking for more layers does not work.
+
+The engagement side did improve: the blade swath now holds 87% of the pile.
+
+### The contact budget was over-provisioned, and that caused the OOM
+
+Measured peak usage at 80 particles in a dense pile, with
+`--max-collision-pairs 400`: **245/3200 broad-phase pairs (8%) and 581/16000
+contact points (4%)**. The default `mcp = 150` gives caps of 1200/750, so 581
+points is *tight but not overflowing* — the silent-overflow risk that motivated
+`mcp = 600` in the overnight run was largely unfounded, and that inflated budget
+is what caused the CUDA OOM. **Use `mcp` 200–250 for dense piles of this size,
+and measure rather than guess** — `contact_budget_usage()` is cheap.
+
 ### Piled collection is ~100× more expensive per transition
 
 A compact heap is one large contact island, so the **post-push settle** dominates:

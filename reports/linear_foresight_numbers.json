@@ -474,6 +474,31 @@
       "lower max_collision_pairs, but measure contact_budget_usage() first since overflow silently corrupts contacts",
       "more VRAM"
     ],
-    "recommended_next": "probe at 80 particles / 4 envs / mcp 400 and read contact_budget_usage() before committing a night"
+    "recommended_next": "probe at 80 particles / 4 envs / mcp 400 and read contact_budget_usage() before committing a night",
+    "probe_2026_09_01": {
+      "config": "80 cubes of 3mm, 4-layer spawn in a 32mm square, mcp=400, 4 envs",
+      "contact_budget_peak": {
+        "broad_pairs": 245,
+        "broad_cap": 3200,
+        "contact_points": 581,
+        "contact_cap": 16000
+      },
+      "budget_conclusion": "Massively over-provisioned. The default mcp=150 gives caps of 1200/750, so 581 points is tight but NOT overflowing. The mcp=600 used overnight was unfounded and is what caused the CUDA OOM. Use mcp 200-250 for dense piles of this size and MEASURE with contact_budget_usage() rather than guessing.",
+      "pile_structure": {
+        "z_span_mm": 3.0,
+        "layer_occupancy": {
+          "L0": 0.94,
+          "L1": 0.06
+        },
+        "settled_footprint_mm": 62,
+        "spawn_footprint_mm": 32
+      },
+      "depth_conclusion": "Smaller cubes do NOT buy depth. 94% single layer at 3mm/80 particles vs 90% at 5mm/30. The footprint spread to ~2x the angle-of-repose prediction: dropping 4 stacked layers onto an empty tray makes the cubes bounce outward, and lighter cubes bounce more. The --pile-extent mechanism reliably yields a dense MONOLAYER at both particle sizes. Achieving depth needs a different spawn (into a settled bed, or a physically smaller container), not more layers.",
+      "engagement": {
+        "pile_in_swath_fraction": 0.87,
+        "note": "improved from 0.67 at 30x5mm"
+      },
+      "throughput_INVALID": "627 s/transition was measured with debug=True, which SandboxManipulation._step_scene treats as 'show viewer' (_show = debug or viewer_type is not None), rendering 2880x2160 every step. Re-measured with debug off."
+    }
   }
 }
