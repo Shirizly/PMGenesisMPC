@@ -1,0 +1,57 @@
+# Training config: NFDUNetFiLM on Genesis cube data
+#
+# Sub-configs are loaded by path reference (strings ending in .yaml are
+# inlined automatically by training.trainer.load_config).
+#
+# Usage:
+#   python -m training.train configs/training/unetfilm_genesis.yaml
+#   python -m training.train configs/training/unetfilm_genesis.yaml \
+#       --override output.log_dir=runs_cubes/my_run training.epochs=200
+
+model:   configs/model/unetfilm.yaml
+dataset: configs/dataset/genesis_cube.yaml
+
+training:
+  epochs:              100
+  batch_size:          64
+  lr:                  1.0e-4
+
+  lr_scheduler:
+    type:       StepLR
+    step_size:  100
+    gamma:      0.75
+
+  augmentation:        true     # ×8 Eulerian spatial aug (4 rotations × 2 flips)
+  patience:            100
+  mixed_precision:     true
+  grad_clip_norm:      1.0
+  save_every_n_epochs: 10
+  num_workers:         4
+
+  loss:
+    type:       eulerian_combined
+    mse:        1.0
+    mass:       0.2
+    dice:       0.0
+    bce:        0.0
+    sharpness:  0.0
+    tv:         0.0
+    add:        0.0
+    remove:     0.0
+
+# Inference geometry written into model_card.yaml at the end of training.
+# raw physics values for physics_bounds.normalize() inside load_model_from_card.
+inference:
+  representation:    eulerian
+  grid_n:            128
+  plate_length_m:    0.04
+  plate_width_m:     0.002
+  plate_sigma_px:    1.5
+  wkspc_w:           0.064
+  global_scale:      0.6
+  particle_friction: 0.05
+  particle_density:  750.0
+  box_friction:      0.05
+
+output:
+  log_dir: runs_cubes/unetfilm_genesis

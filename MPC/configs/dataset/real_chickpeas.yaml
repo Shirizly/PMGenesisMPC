@@ -1,0 +1,28 @@
+# Real-world pile sweep dataset (chickpeas, camera observations).
+# Physics values for real data are uncertain; default_physics uses the
+# Genesis training defaults so the model behaves consistently.
+# Adjust normalization bounds to match training data if fine-tuning.
+
+type: real
+
+data_root: RealData/data
+paths:
+  - chickpeas
+
+default_physics: [0.05, 750.0, 0.05]   # raw [friction, density, box_friction]
+
+val_pct:  10
+test_pct: 10
+
+include_physics: true
+
+transforms:
+  - type: ensure_representation
+    representation: eulerian
+  - type: eulerian_aliases
+
+physics:
+  normalization:
+    friction:     {min: 0.05, max: 0.50}
+    density:      {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

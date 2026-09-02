@@ -1,0 +1,110 @@
+# simple_mpc/config/config_oracle_test.yaml
+#
+# Quick sanity-check run for simple_mpc.oracle_mpc (Genesis-as-model ceiling
+# baseline). 5 independent episodes ("tries"), each a sequence of 5 real
+# pushes, one candidate action evaluated per parallel Genesis env (n_sample ==
+# n_envs == 256 — see run_oracle_mpc.py's printed startup line, which reports
+# the exact number of usable candidates per optimizer iteration: env 0 is
+# BOTH the "real" environment AND a full participant in the candidate pool
+# during planning — see GenesisOracleEnv docstring / genesis_oracle.py — so
+# all 256 envs are usable candidates, not 255).
+#
+# n_envs=256 was picked from Genesis/benchmark_n_envs.py's throughput sweep.
+#
+# Run with:
+#   python run_oracle_mpc.py --config simple_mpc/config/config_oracle_test.yaml --save-video
+
+dataset:
+  init_pos: 'rand_spread'
+  global_scale: 0.6
+  obj: "chickpeas"
+  num_objects: 20
+  cam_height: 0.3
+  cam_fov: 45.0
+  wkspc_w: 0.064
+  render_width: 720
+  render_height: 720
+  n_particles: 20             # "20 objects"
+  material_shape: 'cube'
+  particle_size: 0.005
+  plate_speed: 0.125
+  box_height: 0.04
+  box_wall_thickness: 0.02
+  headless: True
+  # Automatic transition recording (see Genesis/transition_buffer.py,
+  # docs/oracle_mpc_design.md) — on by default; every real step and every
+  # candidate rollout evaluated during planning gets saved.
+  record_transitions: True
+  transitions_dir: 'data/mpc_runs'
+  settle_steps: 100
+  # settle_steps is now a CAP with a convergence exit, not a fixed count, so
+  # this is a safety margin rather than a duration - it costs nothing when the
+  # pile settles early. It was 10 because under the OLD fixed-count semantics a
+  # larger value was pure cost ("was 500 but was a no-op"); under cap semantics
+  # 10 is far too small and the pile is recorded mid-motion. Measured
+  # steps-to-rest for a fresh spawn is ~34, so 500 matches the collection path.
+  reset_warmup_steps: 500
+  pos_ctrl_steps: 60
+  plate_length: 0.04
+  plate_width:  0.002
+  plate_safety_margin: 0.01
+  particle_friction: 0.25
+  particle_density: 750.0
+  box_friction: 0.3
+
+mpc:
+  optimizer: 'cem'            # try --optimizer mppi for a second pass later
+
+  n_mpc: 10                    # "a sequence of 10 actions"
+  n_look_ahead: 1              # "no look_ahead"
+  n_envs: 256                  # benchmarked best throughput (Genesis/benchmark_n_envs.py)
+  n_sample: 512                 # == n_envs: exactly one candidate per env, no
+                                 # sequential re-batching within an iteration
+  n_opt_iter: 5                # "5 iterations per step"
+
+  rollout_settle_steps: 50      # half of dataset.settle_steps (100), per plan
+  cost_mode: 'terminal'         # irrelevant with n_look_ahead=1, kept explicit
+  gamma: 0.9
+
+  cem:
+    n_elite: 8
+    momentum: 0.5
+    std_floor: 0.005
+    init_std_frac: 0.5
+
+  mppi:
+    lambda: 0.1
+    sigma: 0.02
+    beta_filter: 0.7
+
+  grid_res: [64, 64]
+
+  # "basic eulerian mse error only" — every other term weighted to 0
+  loss:
+    type: 'eulerian_combined'
+    mse: 1.0
+    dice: 0.0
+    bce: 0.0
+    sharpness: 0.0
+    tv: 0.0
+    mass: 0.0
+    add: 0.0
+    remove: 0.0
+
+  reward:
+    empty_penalty: 0.2
+
+  action_sampler: 'physics_aware'
+
+  task:
+    type: 'target_shape'
+    target_char: 'T'           # "goal is letter T"
+
+  output_dir: 'outputs/oracle_mpc_test'
+  video_fps: 1.0
+
+# "5 tries" — independent episodes; each reset()s the box and re-scales the
+# goal to the fresh material footprint before planning.
+episodes:
+  n_episodes: 3
+  random_seed_base: 0

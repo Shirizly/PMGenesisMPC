@@ -16,6 +16,8 @@ Genesis/data/dry_run/
 Genesis/data/ignore/
 Genesis/data/seedtest/
 Genesis/layered/data/
+MPC/data/
+MPC/mpc_transitions/
 outputs/
 
 # Rendered inspection videos. Regenerate with

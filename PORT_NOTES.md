@@ -582,6 +582,45 @@ card, and this document's policy is that no performance figure is a promise
 about someone else's hardware — so it is overridable (`--vram-per-env`) and an
 over-estimate costs one size, not the run.
 
+## 11. MPC stack — `MPC/`
+
+The MPC / world-model research stack, ported to run against the current
+simulator. One directory, kept separate from the simulator work so the
+`Genesis/` PR stays reviewable on its own. Full account in
+[`MPC/README.md`](MPC/README.md); the five things the port changed:
+
+1. **`training/` → `model_training/`.** `Genesis/training/` also exists, and
+   with both directories on `sys.path` a plain `import training` resolved to
+   whichever came first — this package's had an `__init__.py`, so it won and
+   `training.dataset` became unreachable. Import order should not decide which
+   package you get.
+2. **`from Genesis.x import y` → flat imports**, via one `genesis_path.py`.
+   Four stale hacks computing the path relative to the old file locations —
+   pointing at a non-existent `MPC/Genesis` — were removed.
+3. **Transition recording moved into a subclass.** `push_and_record`,
+   `flush_transitions`, `set_transition_context` and `broadcast_state_from_env`
+   were methods on the historical simulator and are not in the current one.
+   They are now `MPC/env/recording_sandbox.py`'s `RecordingSandbox`, because
+   the simulator already has a recording path and a second overlapping one is
+   what the simulator PR should not carry. Subclassing works here — unlike the
+   layered spawn, which had to be a copy — because none of it runs before
+   `scene.build()`.
+4. **`reset_warmup_steps` 10 → 500.** A semantic change, not tuning:
+   `settle_steps` used to be a fixed count and is now a cap with a convergence
+   exit. Under the old semantics a bigger number was pure cost, which is why
+   the config read `reset_warmup_steps: 10  # was 500 but was a no-op`. Under
+   cap semantics 10 is far too small, and the simulator says so — the pile is
+   recorded mid-motion at 9.95 mm/s against a 1.0 mm/s threshold.
+5. **`model/futureintegration/` lost its four `.py` files**, all byte-identical
+   to files upstream maintains in `GranularDynamics2/myClasses/`. The notes
+   stay; the code cannot drift. One of them, `Diff_Renderer.py`, does not even
+   parse.
+
+Verified by importing every module (49/50 — the one failure is a design sketch
+that never imported) and by constructing a `GenesisEnv`, calling
+`push_and_record`, and confirming the flushed transition file has the right
+shapes and the episode context attached.
+
 ## 12. Dataset: what was taken, and one defect fixed
 
 `Genesis/training/dataset.py` is **upstream's**, kept as-is apart from the

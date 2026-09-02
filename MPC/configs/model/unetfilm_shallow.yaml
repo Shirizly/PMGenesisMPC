@@ -1,0 +1,12 @@
+# Lightweight FiLM-conditioned U-Net (NFDUNetFiLMShallow).
+# Fewer layers than unetfilm; faster training, suitable for lower-resolution grids.
+#
+# forward(input: Tensor[B,2,H,W], physics: Tensor[B,3]) → Tensor[B,1,H,W]
+
+type: unetfilm-shallow
+
+in_channels:      2
+cond_dim:         3
+uses_physics:     true
+input_mode:       standard
+residual_channel: 0

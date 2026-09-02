@@ -1,0 +1,23 @@
+# Genesis simulation data (limited subset) for end-to-end refactored training.
+
+type: genesis
+
+paths:
+  - corl_limited/cubes
+
+val_pct: 10
+test_pct: 10
+
+resolution_scale: 0.5
+include_physics: true
+
+transforms:
+  - type: ensure_representation
+    representation: eulerian
+  - type: eulerian_aliases
+
+physics:
+  normalization:
+    friction: {min: 0.05, max: 0.50}
+    density: {min: 750.0, max: 5000.0}
+    box_friction: {min: 0.05, max: 0.50}

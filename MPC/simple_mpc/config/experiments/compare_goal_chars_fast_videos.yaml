@@ -1,0 +1,151 @@
+# compare_goal_chars_fast_videos.yaml
+#
+# Compares GNN vs. Eulerian-splat across three goal characters (T / O / I).
+# All other settings match compare_models_fast_videos.yaml.
+# mpc.task.target_char is read per-experiment from the overridden cfg by
+# build_goal(), so no run_experiments.py changes are needed for this parameter.
+#
+# Usage:
+#   bash scripts/run_experiments_headless_safe.sh \
+#        config/experiments/compare_goal_chars_fast_videos.yaml
+
+base_config: config/mpc/config_simple.yaml
+
+output:
+  root_dir: outputs/experiments
+  experiment_name: compare_goal_chars_fast_videos
+
+  save_rewards: true
+  save_actions: true
+  save_per_episode_npz: true
+  save_reward_plot: true
+
+  save_raw_obs: true
+  save_states: false
+  save_prediction_videos: true
+  prediction_video_fps: 0.3
+
+  benchmark_throughput: false
+  success_threshold: 0.0
+
+episodes:
+  n_episodes: 10
+  random_seed_base: 13
+
+experiments:
+  # ── goal character 'T' ──────────────────────────────────────────────────────
+  - name: gnn_goal_T
+    description: "GNN dynamics model — goal shape 'T'"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      mpc.task.target_char: "T"
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_goal_T
+    description: "Eulerian splat heuristic — goal shape 'T'"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      mpc.task.target_char: "T"
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  # ── goal character 'O' ──────────────────────────────────────────────────────
+  - name: gnn_goal_O
+    description: "GNN dynamics model — goal shape 'O'"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      mpc.task.target_char: "O"
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_goal_O
+    description: "Eulerian splat heuristic — goal shape 'O'"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      mpc.task.target_char: "O"
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  # ── goal character 'I' ──────────────────────────────────────────────────────
+  - name: gnn_goal_I
+    description: "GNN dynamics model — goal shape 'I'"
+    model:
+      type: gnn
+      folder: 2023-01-28-10-42-05-114323
+      iter_num: -1
+    overrides:
+      mpc.task.target_char: "I"
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50
+
+  - name: splat_goal_I
+    description: "Eulerian splat heuristic — goal shape 'I'"
+    model:
+      type: eulerian
+      folder: None
+      iter_num: -1
+      need_weights: false
+      heuristic_type: splat
+    overrides:
+      mpc.task.target_char: "I"
+      dataset.render_width: 480
+      dataset.render_height: 480
+      dataset.fast_mode: true
+      dataset.action_step_size: 0.03
+      dataset.settle_steps: 50
+      dataset.reset_warmup_steps: 200
+      dataset.render_step_before_capture: false
+      mpc.n_sample: 512
+      mpc.n_update_iter: 50

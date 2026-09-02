@@ -1,0 +1,12 @@
+# EulerianSTN: warps the current occupancy through a learned displacement
+# field (grid_sample) instead of predicting pixel values directly.
+# Physics values are accepted (API parity with NFDUNetFiLM) but currently
+# unused internally by the model.
+type: spatial-transformer
+
+in_channels: 2
+uses_physics: true
+
+base_channels: 32
+depth: 3
+flow_scale: 0.1

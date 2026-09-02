@@ -1,0 +1,15 @@
+# Model configuration for NFDUNetFiLM with configurable depth
+type: unetfilm
+cond_dim: 3
+uses_physics: true
+input_mode: standard
+
+# Depth controls the number of pooling levels; encoder widths double per
+# level (8, 16, 32, ...). Alternatively set explicit widths with e.g.
+#   channels: [8, 16, 32, 64]
+# which overrides depth.
+depth: 4 # One level deeper than the default (3).
+
+# Other parameters can be kept or adjusted as needed
+in_channels: 2
+residual_channel: 0

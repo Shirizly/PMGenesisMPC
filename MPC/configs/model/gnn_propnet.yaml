@@ -1,0 +1,6 @@
+type: gnn-propnet
+
+# PropNet particle dynamics hyperparameters.
+nf_effect: 150
+add_delta: false
+adj_thresh: 0.08

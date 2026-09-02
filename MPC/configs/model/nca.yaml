@@ -1,0 +1,11 @@
+# NCAWithPhysics: Neural Cellular Automata + residual U-Net correction head.
+# Physics is concatenated as extra static input channels (no FiLM).
+type: nca
+
+in_channels: 2
+cond_dim: 3
+uses_physics: true
+
+nca_hidden: 64
+nca_steps: 8
+unet_features: [32, 64, 128]

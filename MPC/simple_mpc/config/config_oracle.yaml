@@ -1,0 +1,131 @@
+# simple_mpc/config/config_oracle.yaml
+#
+# Configuration for simple_mpc.oracle_mpc.run_oracle_mpc() — the Genesis-as-
+# model ceiling-baseline MPC. See docs/oracle_mpc_design.md for the full design.
+#
+# The `dataset` section mirrors config_simple.yaml (same GenesisOracleEnv /
+# EulerianModelWrapper.default_bounds conventions) so oracle runs are
+# directly comparable to learned-model simple_mpc runs on the same task.
+
+dataset:
+  init_pos: 'rand_spread'
+  global_scale: 0.6          # = 2 * cam_height (metres); cam at 0.3 m above box
+  obj: "chickpeas"
+  num_objects: 20
+  cam_height: 0.3
+  cam_fov: 45.0
+  wkspc_w: 0.064              # half-width of Genesis box (metres; full box = 0.128 m)
+  render_width: 720
+  render_height: 720
+  n_particles: 20
+  material_shape: 'cube'
+  particle_size: 0.005        # metres
+  plate_speed: 0.125
+  box_height: 0.04
+  box_wall_thickness: 0.02
+  headless: True
+  # Automatic transition recording (see Genesis/transition_buffer.py,
+  # docs/oracle_mpc_design.md): every real step AND every candidate rollout
+  # evaluated during planning is saved (tagged is_candidate) to
+  # transitions_dir (relative to Genesis/), in the same on-disk format as
+  # Genesis/data_collection_clean.py's dataset files. On by default.
+  record_transitions: True
+  transitions_dir: 'data/mpc_runs'
+  # timing knobs (real / non-rollout steps — see mpc.rollout_settle_steps
+  # below for the reduced-fidelity planning-time equivalents)
+  settle_steps: 100
+  # settle_steps is now a CAP with a convergence exit, not a fixed count, so
+  # this is a safety margin rather than a duration - it costs nothing when the
+  # pile settles early. It was 10 because under the OLD fixed-count semantics a
+  # larger value was pure cost ("was 500 but was a no-op"); under cap semantics
+  # 10 is far too small and the pile is recorded mid-motion. Measured
+  # steps-to-rest for a fresh spawn is ~34, so 500 matches the collection path.
+  reset_warmup_steps: 500
+  pos_ctrl_steps: 60
+  plate_length: 0.04
+  plate_width:  0.002
+  plate_safety_margin: 0.01
+  particle_friction: 0.25
+  particle_density: 750.0
+  box_friction: 0.3
+
+mpc:
+  # ── optimizer selection ────────────────────────────────────────────────
+  optimizer: 'cem'          # 'cem' | 'mppi'
+
+  # ── core MPC parameters ────────────────────────────────────────────────
+  n_mpc: 8                  # number of real-world steps to execute
+  n_look_ahead: 1           # planning horizon (steps rolled out in Genesis; held
+                             # constant across the run — see oracle_mpc.py note)
+  n_envs: 32                # parallel Genesis envs = candidates evaluated per
+                             # optimizer iteration. Benchmark with
+                             # Genesis/benchmark_n_envs.py before scaling up —
+                             # bounded by GPU memory / build time.
+  n_sample: 32               # candidates per optimizer iteration; if > n_envs,
+                             # runs ceil(n_sample / n_envs) sequential batches
+                             # (snapshot-restored) per iteration.
+  n_opt_iter: 4              # optimizer iterations per MPC step
+
+  # rollout_settle_steps: settle-phase step count DURING PLANNING rollouts
+  # only (the real executed step always uses dataset.settle_steps in full).
+  # Default here is dataset.settle_steps // 2 if unset. Per review: reduce
+  # every phase except the sweep by 2x during planning — the sweep itself is
+  # already the physical minimum (distance / plate speed), not an
+  # independently tunable step count. The lower/lift (clearance) phase is
+  # halved automatically inside GenesisOracleEnv (rollout_clearance_steps =
+  # real_clearance_steps // 2); only the settle budget is config-exposed here.
+  rollout_settle_steps: 50
+
+  # cost_mode: 'terminal' evaluates the loss once, on the final rollout
+  # state. 'discounted' sums per-step losses with a gamma discount (gamma^s,
+  # s=0 at the first look-ahead step) — only meaningful when n_look_ahead > 1.
+  cost_mode: 'terminal'
+  gamma: 0.9
+
+  cem:
+    n_elite: 8
+    momentum: 0.5
+    std_floor: 0.005
+    init_std_frac: 0.5       # initial std, as a fraction of (act_hi - act_lo)
+
+  mppi:
+    lambda: 0.1
+    sigma: 0.02
+    beta_filter: 0.7
+
+  # ── occupancy grid (must match EulerianModelWrapper.default_bounds' 2-D
+  # convention: x/y only) ─────────────────────────────────────────────────
+  grid_res: [64, 64]
+
+  # ── cost / loss ─────────────────────────────────────────────────────────
+  # Passed to training.losses.build_loss (per_sample=True is forced on by
+  # oracle_mpc regardless of what's set here — sampling MPC always needs a
+  # per-candidate cost). Any loss registered in training/losses.py works
+  # here automatically.
+  #
+  #   type: 'eulerian_combined' — mse/dice/bce/... against the binary goal
+  #     occupancy mask (OccupancyReward.goal_occupancy_mask).
+  #   type: 'score_map_weighted' — literally -sum(occ * score_map), i.e. the
+  #     same objective used for reward reporting below (set mse: 0 so only
+  #     this term is active if you want optimization and reporting to share
+  #     the exact same objective; see docs/oracle_mpc_design.md "Cost").
+  loss:
+    type: 'eulerian_combined'
+    mse: 1.0
+    dice: 0.0
+    bce: 0.0
+
+  # ── reward shaping (reporting only — rewards[]/occ_rewards[] in the
+  # result dict; matches simple_mpc.mpc's empty_penalty convention so oracle
+  # runs are directly comparable to learned-model runs) ────────────────────
+  reward:
+    empty_penalty: 0.2
+
+  action_sampler: 'physics_aware'
+
+  task:
+    type: 'target_shape'
+    target_char: 'T'
+
+  output_dir: 'outputs/oracle_mpc'
+  video_fps: 2

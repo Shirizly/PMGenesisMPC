@@ -1,0 +1,121 @@
+# simple_mpc/config/experiments/compare_models.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+# Experiment suite: compare 6 MPC models on the same task.
+#
+#   1. Heuristic spread  64×64
+#   2. Heuristic spread  32×32
+#   3. UNet deep        128×128
+#   4. UNet deep         64×64
+#   5. UNet shallow     128×128
+#   6. UNet shallow      64×64
+#
+# Usage:
+#   python run_experiments.py simple_mpc/config/experiments/compare_models.yaml
+#   python run_experiments.py simple_mpc/config/experiments/compare_models.yaml --dry-run
+#   python run_experiments.py simple_mpc/config/experiments/compare_models.yaml \
+#       --only unet_deep_128 unet_shallow_128
+#
+# Weights files expected at:
+#   runs_cubes/unet_deep/unet_best.pth
+#   runs_cubes/unet_shallow/unet_best.pth
+# ──────────────────────────────────────────────────────────────────────────────
+
+base_config: simple_mpc/config/config_simple.yaml
+
+
+# ── output settings ───────────────────────────────────────────────────────────
+output:
+  root_dir:          outputs/experiments
+  experiment_name:   compare_models_n_c_512_n_i_50
+
+  save_rewards:          true
+  save_actions:          true
+  save_per_episode_npz:  true
+  save_reward_plot:      true
+  save_raw_obs:          true
+  save_states:           false
+
+  save_prediction_videos: true
+  prediction_video_fps:   0.5
+
+  benchmark_throughput: false
+  success_threshold: 0.0
+
+
+# ── shared episode settings ───────────────────────────────────────────────────
+episodes:
+  n_episodes: 5
+  random_seed_base: 42
+
+
+# ── experiments ───────────────────────────────────────────────────────────────
+#
+# model keys:
+#   type:           'eulerian' | 'unetfilm'
+#   need_weights:   false for heuristic eulerian models
+#   heuristic_type: 'spread' | 'splat' | 'spread2' | 'cumulative' | 'fluid'
+#                   (eulerian only; see model/eulerian_wrapper.py's
+#                   push-model registry, build_push_model)
+#   grid_n:         occupancy grid side length in pixels (e.g. 128, 64, 32)
+#   (width, sigma, decay, n_steps, ... : optional per-heuristic overrides,
+#   fall back to registry defaults if omitted)
+#   weights_path:   path to .pth checkpoint (unetfilm only)
+#   physics_dim:    physics embedding size (unetfilm, default 3)
+#
+# All dataset.* and mpc.* keys from config_simple.yaml can be set in `overrides`.
+
+experiments:
+
+  # ── 1. Heuristic spread — 64×64 ─────────────────────────────────────────────
+  - name:        heuristic_spread_64
+    description: "Eulerian heuristic spread, 64×64 occupancy grid (no learned weights)"
+    model:
+      type:           eulerian
+      need_weights:   false
+      heuristic_type: spread
+      grid_n:         64
+
+  # ── 2. Heuristic spread — 32×32 ─────────────────────────────────────────────
+  - name:        heuristic_spread_32
+    description: "Eulerian heuristic spread, 32×32 occupancy grid (no learned weights)"
+    model:
+      type:           eulerian
+      need_weights:   false
+      heuristic_type: spread
+      grid_n:         32
+
+  # ── 3. UNet deep — 128×128 ──────────────────────────────────────────────────
+  - name:        unet_deep_128
+    description: "UNetFiLM deep variant, 128×128 inference grid"
+    model:
+      type:         unetfilm
+      weights_path: runs_cubes/nfu_mse_mass2/unet_best.pth
+      grid_n:       128
+      physics_dim:  3
+
+  # ── 4. UNet deep — 32×32 ────────────────────────────────────────────────────
+  - name:        unet_deep_32
+    description: "UNetFiLM deep variant, 32×32 inference grid"
+    model:
+      type:         unetfilm
+      weights_path: runs_cubes/nfu_mse_mass2_lowres/unet_best.pth
+      grid_n:       32
+      physics_dim:  3
+
+  # ── 5. UNet shallow — 128×128 ───────────────────────────────────────────────
+  - name:        unet_shallow_128
+    description: "UNetFiLM shallow variant, 128×128 inference grid"
+    model:
+      type:         unetfilm
+      weights_path: runs_cubes/nfu_mse_mass2_shallow/unet_best.pth
+      grid_n:       128
+      physics_dim:  3
+
+  # ── 6. UNet shallow — 32×32 ─────────────────────────────────────────────────
+  - name:        unet_shallow_32
+    description: "UNetFiLM shallow variant, 32×32 inference grid"
+    model:
+      type:         unetfilm
+      weights_path: runs_cubes/nfu_mse_mass2_shallowlowres/unet_best.pth
+      grid_n:       32
+      physics_dim:  3
