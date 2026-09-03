@@ -1,4 +1,5 @@
 .venv/
+.vscode/
 Genesis/utilities/__pycache__/*
 Genesis/training/__pycache__/*
 Genesis/training/__pycache__/dataset.cpython-310.pyc
