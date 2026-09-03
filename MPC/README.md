@@ -21,7 +21,7 @@ These were written against the previous layout and have been updated for this
 one — `model_training/` rather than `training/`, the simulator's current file
 names, and the recording API's move into `env/recording_sandbox.py`. Anything
 they say about `Genesis/` internals is better checked against
-[`../PORT_NOTES.md`](../PORT_NOTES.md), which is maintained alongside the code.
+[`../PORT_NOTES.md`](../docs/PORT_NOTES.md), which is maintained alongside the code.
 
 ## Running
 

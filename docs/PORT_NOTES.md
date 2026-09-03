@@ -7,7 +7,7 @@ current architecture and **re-measured on Genesis 1.3.3** rather than trusted
 from the old branch.
 
 Detailed measurements, methodology and the reasoning behind each value live in
-[`scaling_to_200_objects.md`](scaling_to_200_objects.md). Read the
+[`scaling_to_200_objects.md`](../scaling_to_200_objects.md). Read the
 [corrections](#corrections-to-the-scaling-guide) section below first — two of
 that document's claims do not survive the move to the current tray model.
 
@@ -22,7 +22,7 @@ distances, angles and particle counts, which are properties of the physics and
 should reproduce anywhere; a disagreement in those is a real regression.
 
 For performance on your own machine, run the scripts in
-[`tests/benchmarks/`](tests/benchmarks/) — they print the backend they actually
+[`tests/benchmarks/`](../tests/benchmarks/) — they print the backend they actually
 used, which is the first thing to check.
 
 ---
@@ -484,7 +484,7 @@ Practical consequences:
 
 A separate, self-contained path for particle counts that will not fit in one
 layer (§7). The monolayer code in `Genesis/` is untouched by it. See
-[`Genesis/layered/README.md`](Genesis/layered/README.md) for the full account.
+[`Genesis/layered/README.md`](../Genesis/layered/README.md) for the full account.
 
 **At 5 mm you don't need it.** The single-layer ceiling is set by the *grid
 fallback* that `_sample_nonoverlapping_particle_positions` drops into when
@@ -587,7 +587,7 @@ over-estimate costs one size, not the run.
 The MPC / world-model research stack, ported to run against the current
 simulator. One directory, kept separate from the simulator work so the
 `Genesis/` PR stays reviewable on its own. Full account in
-[`MPC/README.md`](MPC/README.md); the five things the port changed:
+[`MPC/README.md`](../MPC/README.md); the five things the port changed:
 
 1. **`training/` → `model_training/`.** `Genesis/training/` also exists, and
    with both directories on `sys.path` a plain `import training` resolved to
@@ -721,7 +721,7 @@ reaches `__init__` or the split logic.
 
 ## Corrections to the scaling guide
 
-[`scaling_to_200_objects.md`](scaling_to_200_objects.md) was written against the
+[`scaling_to_200_objects.md`](../scaling_to_200_objects.md) was written against the
 older simulator. Two of its claims do not transfer, and the guide should be read
 with these in mind until it is revised:
 
@@ -740,7 +740,7 @@ this branch: n=200 at 5 mm places and settles fine in a single flat layer.
 So the guide's "150 and 200 could not be placed at any size" was a limitation
 of the *old* placer, which upstream's rejection sampler with grid fallback has
 already solved. The layered spawn is not part of the monolayer path; it lives in
-[`Genesis/layered/`](Genesis/layered/) (§9), where the guide's ~1460-step
+[`Genesis/layered/`](../Genesis/layered/) (§9), where the guide's ~1460-step
 respawn settle is the reason for the higher `settle_steps` cap. Its §2 capacity
 table is superseded outright — the measured single-layer ceilings are ~2.2x
 what it assumed.
@@ -838,7 +838,7 @@ python tests/benchmarks/probe_physics.py       # plate, settling, actions
 python tests/benchmarks/probe_piles.py --pour --shape sphere
 ```
 
-See [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
+See [`tests/benchmarks/README.md`](../tests/benchmarks/README.md).
 
 Collection, run from inside `Genesis/` (upstream's convention — this package
 uses flat sibling imports, not relative ones):

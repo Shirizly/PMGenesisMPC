@@ -8,11 +8,11 @@ Related documents:
 | | |
 |---|---|
 | [`PORT_NOTES.md`](PORT_NOTES.md) | why the simulator behaves as it does — every non-obvious default, with the measurement behind it |
-| [`docs/plate_model.md`](docs/plate_model.md) | the tool's actuator model in detail |
-| [`Genesis/layered/README.md`](Genesis/layered/README.md) | stacked spawn, and when you need it |
-| [`MPC/README.md`](MPC/README.md) | the MPC stack's layout and how it reaches the simulator |
-| [`MPC/docs/ARCHITECTURE.md`](MPC/docs/ARCHITECTURE.md) | model/training/registry design |
-| [`tests/benchmarks/README.md`](tests/benchmarks/README.md) | measuring anything on your own machine |
+| [`docs/plate_model.md`](plate_model.md) | the tool's actuator model in detail |
+| [`Genesis/layered/README.md`](../Genesis/layered/README.md) | stacked spawn, and when you need it |
+| [`MPC/README.md`](../MPC/README.md) | the MPC stack's layout and how it reaches the simulator |
+| [`MPC/docs/ARCHITECTURE.md`](../MPC/docs/ARCHITECTURE.md) | model/training/registry design |
+| [`tests/benchmarks/README.md`](../tests/benchmarks/README.md) | measuring anything on your own machine |
 
 ---
 
@@ -89,7 +89,7 @@ rolling friction change in place via `set_material_properties()`.
 Modelled as a gantry axis rather than a free box: reflected drivetrain inertia
 via `set_dofs_armature`, gains derived from mass and bandwidth
 (`kp = mω²`, `kv = 2ζmω`), and a bounded force range. Details and the reasoning
-in [`docs/plate_model.md`](docs/plate_model.md).
+in [`docs/plate_model.md`](plate_model.md).
 
 ### Safety checks that run on their own
 
@@ -226,7 +226,7 @@ any size failed, and writes `run_collection_report.json`.
 
 For counts that will not fit one layer, `Genesis/layered/` is a self-contained
 copy with a layered placer and its own config. It is rarely needed — see its
-[README](Genesis/layered/README.md) for the measured per-layer ceilings and the
+[README](../Genesis/layered/README.md) for the measured per-layer ceilings and the
 two costs (partial observability, and material above the blade's reach).
 
 ---
@@ -346,7 +346,7 @@ where `input_grid` is `[occupancy, action projection]` at 128×128.
 
 **`MPC/`** — the research stack: a model registry, a dataset registry, a
 config-driven trainer, and several model families. See
-[`MPC/docs/ARCHITECTURE.md`](MPC/docs/ARCHITECTURE.md).
+[`MPC/docs/ARCHITECTURE.md`](../MPC/docs/ARCHITECTURE.md).
 
 ### On physics conditioning
 
@@ -392,14 +392,14 @@ a target shape, with target shapes stored as distance fields under
 `MPC/env/target_shapes/`.
 
 Detail lives in `MPC/docs/`:
-[`ARCHITECTURE.md`](MPC/docs/ARCHITECTURE.md) (module map, data flow,
+[`ARCHITECTURE.md`](../MPC/docs/ARCHITECTURE.md) (module map, data flow,
 extension points, config structure),
-[`INTERFACES.md`](MPC/docs/INTERFACES.md) (the contracts between model,
+[`INTERFACES.md`](../MPC/docs/INTERFACES.md) (the contracts between model,
 dataset and trainer),
-[`UTILITIES.md`](MPC/docs/UTILITIES.md),
-[`oracle_mpc_design.md`](MPC/docs/oracle_mpc_design.md) (why the oracle exists
+[`UTILITIES.md`](../MPC/docs/UTILITIES.md),
+[`oracle_mpc_design.md`](../MPC/docs/oracle_mpc_design.md) (why the oracle exists
 and what it records),
-[`human_demo_design.md`](MPC/docs/human_demo_design.md).
+[`human_demo_design.md`](../MPC/docs/human_demo_design.md).
 
 ---
 
